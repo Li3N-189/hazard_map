@@ -57,8 +57,8 @@
               event.detail.positionChange.x * this.data.translationFactor;
             
             // カメラの向きやAR表示に応じて、上下スワイプを Y軸（上下）か Z軸（奥行き）にするか調整してください
-            this.el.object3D.position.z -=
-              event.detail.positionChange.z * this.data.translationFactor;
+            this.el.object3D.position.z +=
+              event.detail.positionChange.y * this.data.translationFactor;
           }
         },
       
