@@ -7,7 +7,8 @@
     <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
     <!-- AR.js の読み込み -->
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
-    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gestures.js"></script>
+    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-detector.js"></script>
+    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-handler.js"></script>
     <script>
       // 1本指スワイプで平行移動（Pan）を行うカスタムコンポーネント
       AFRAME.registerComponent("pan-handler", {
@@ -64,9 +65,9 @@
         
         <!-- 3. OBJモデルの配置 -->
         <a-entity
-          id="ar-object"
+          class="cantap"
           pan-handler="factor: 0.005"
-          gesture-handler="enableRotation: false;"
+          gesture-handler="minScale: 0.25; maxScale: 8; enableRotation: false;"
           obj-model="obj: #my-obj; mtl: #my-mtl"
           scale="0.0065 0.0065 0.0065" 
           position="0.5 0 -0.5" 
