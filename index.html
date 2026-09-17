@@ -56,6 +56,7 @@
             this.el.object3D.position.x +=
               event.detail.positionChange.x * this.data.translationFactor;
             
+            // カメラの向きやAR表示に応じて、上下スワイプを Y軸（上下）か Z軸（奥行き）にするか調整してください
             this.el.object3D.position.z +=
               event.detail.positionChange.y * this.data.translationFactor;
           }
@@ -103,6 +104,7 @@
       
       <!-- 1. モデルとマテリアルの事前読み込み -->
       <a-assets>
+        <!-- ご自身のファイルパスに書き換えてください -->
         <a-asset-item id="my-obj" src="./obj/dem.obj"></a-asset-item>
         <a-asset-item id="my-mtl" src="./obj/dem.mtl"></a-asset-item>
       </a-assets>
@@ -116,11 +118,12 @@
             obj-model="obj: #my-obj; mtl: #my-mtl"
             scale="0.0065 0.0065 0.0065" 
             position="0.5 0 -0.5"
+            material="polygonOffset: true; polygonOffsetFactor: 1; polygonOffsetUnits: 1"
             rotation="0 0 0">
           </a-entity>
           <a-box
             id="water"
-            material="color: #08f; transparent: true; opacity: 0.5"
+            material="color: #08f; transparent: true; opacity: 0.5; polygonOffset: true; polygonOffsetFactor: -1; polygonOffsetUnits: -1"
             position="0 0 0"
             scale="1 0 1">
           </a-box>
