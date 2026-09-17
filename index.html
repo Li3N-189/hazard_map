@@ -7,8 +7,45 @@
     <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
     <!-- AR.js の読み込み -->
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
-    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-detector.js"></script>
-    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-handler.js"></script>
+    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gestures.js"></script>
+    <script>
+      // 1本指スワイプで平行移動（Pan）を行うカスタムコンポーネント
+      AFRAME.registerComponent("pan-handler", {
+        schema: {
+          factor: { type: "number", default: 0.005 } // 移動速度の調整用フラグメント
+        },
+
+        init: function () {
+          this.handleMove = this.handleMove.bind(this);
+          this.sceneEl = this.el.sceneEl;
+          
+          // gesture-detector の onefingermove イベントをリッスン
+          this.sceneEl.addEventListener("onefingermove", this.handleMove);
+        },
+
+        remove: function () {
+          this.sceneEl.removeEventListener("onefingermove", this.handleMove);
+        },
+
+        handleMove: function (event) {
+          // イベントの移動量を取得
+          const detail = event.detail;
+          const currentPosition = this.el.getAttribute("position");
+
+          // X軸（横）と Z軸（前後・奥行き）の移動量を計算
+          // ※カメラの向きや座標系に合わせて符号 (+ / -) を調整してください
+          const newX = currentPosition.x + detail.positionChange.x * this.data.factor;
+          const newZ = currentPosition.z + detail.positionChange.y * this.data.factor;
+
+          // オブジェクトの位置を更新
+          this.el.setAttribute("position", {
+            x: newX,
+            y: currentPosition.y, // Y軸（高さ）は固定
+            z: newZ
+          });
+        }
+      });
+    </script>
   </head>
   <body style="margin: 0; overflow: hidden;">
     
@@ -27,8 +64,9 @@
         
         <!-- 3. OBJモデルの配置 -->
         <a-entity
-          class="cantap"
-          gesture-handler="minScale: 0.25; maxScale: 8.0;"
+          id="ar-object"
+          pan-handler="factor: 0.005"
+          gesture-handler="enableRotation: false;"
           obj-model="obj: #my-obj; mtl: #my-mtl"
           scale="0.0065 0.0065 0.0065" 
           position="0.5 0 -0.5" 
