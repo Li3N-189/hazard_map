@@ -56,7 +56,6 @@
             this.el.object3D.position.x +=
               event.detail.positionChange.x * this.data.translationFactor;
             
-            // カメラの向きやAR表示に応じて、上下スワイプを Y軸（上下）か Z軸（奥行き）にするか調整してください
             this.el.object3D.position.z +=
               event.detail.positionChange.y * this.data.translationFactor;
           }
@@ -77,66 +76,6 @@
             this.el.object3D.scale.z = this.scaleFactor * this.initialScale.z;
           }
         },
-      });
-      AFRAME.registerComponent('stencil-mask', {
-        init: function () {
-          this.el.addEventListener('model-loaded', this.updateMaterials.bind(this));
-          // Primitives (a-box等) の読み込みタイミングに対応
-          if (this.el.getObject3D('mesh')) {
-            this.updateMaterials();
-          }
-        },
-      
-        updateMaterials: function () {
-          const mesh = this.el.getObject3D('mesh');
-          if (!mesh) return;
-      
-          mesh.traverse((node) => {
-            if (node.isMesh) {
-              // カラーバッファと深度バッファへの書き込みを無効化（箱自体は透明になる）
-              node.material.colorWrite = false;
-              node.material.depthWrite = false;
-      
-              // ステンシルバッファの設定
-              node.material.stencilWrite = true;
-              node.material.stencilRef = 1;
-              node.material.stencilFunc = THREE.AlwaysStencilFunc;
-              node.material.stencilZPass = THREE.ReplaceStencilOp; // ポリゴンがある場所に1を書き込む
-      
-              // 描画順を先に指定（地形より前に処理させる）
-              node.renderOrder = 1;
-            }
-          });
-        }
-      });
-      
-      AFRAME.registerComponent('stencil-target', {
-        init: function () {
-          this.el.addEventListener('model-loaded', this.updateMaterials.bind(this));
-          if (this.el.getObject3D('mesh')) {
-            this.updateMaterials();
-          }
-        },
-      
-        updateMaterials: function () {
-          const mesh = this.el.getObject3D('mesh');
-          if (!mesh) return;
-      
-          mesh.traverse((node) => {
-            if (node.isMesh) {
-              node.material.stencilWrite = true;
-              node.material.stencilRef = 1;
-              // ステンシル値が1「ではない」場所だけ描画（＝箱の領域をカット）
-              node.material.stencilFunc = THREE.NotEqualStencilFunc;
-              node.material.stencilFail = THREE.KeepStencilOp;
-              node.material.stencilZFail = THREE.KeepStencilOp;
-              node.material.stencilZPass = THREE.KeepStencilOp;
-      
-              // 描画順を後に指定
-              node.renderOrder = 2;
-            }
-          });
-        }
       });
     </script>
     <style>
@@ -160,11 +99,10 @@
       <input id="depth" type="range" min="0" max="0.2" value="0" step="0.001">
     </div>
     <!-- AR用のシーン設定 -->
-    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector renderer="stencil: true">
+    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector>
       
       <!-- 1. モデルとマテリアルの事前読み込み -->
       <a-assets>
-        <!-- ご自身のファイルパスに書き換えてください -->
         <a-asset-item id="my-obj" src="./obj/dem.obj"></a-asset-item>
         <a-asset-item id="my-mtl" src="./obj/dem.mtl"></a-asset-item>
       </a-assets>
@@ -178,15 +116,13 @@
             obj-model="obj: #my-obj; mtl: #my-mtl"
             scale="0.0065 0.0065 0.0065" 
             position="0.5 0 -0.5"
-            rotation="0 0 0"
-            stencil-target>
+            rotation="0 0 0">
           </a-entity>
           <a-box
             id="water"
             material="color: #08f; transparent: true; opacity: 0.5"
             position="0 0 0"
-            scale="1 0 1"
-            stencil-mask>
+            scale="1 0 1">
           </a-box>
         </a-entity>
       </a-marker>
