@@ -20,7 +20,7 @@
       
         init: function () {
           this.handleScale = this.handleScale.bind(this);
-          this.handleTranslation = this.handleTranslation.bind(this); // 回転から平行移動に変更
+          this.handleTranslation = this.handleTranslation.bind(this);
       
           this.isVisible = false;
           this.initialScale = this.el.object3D.scale.clone();
@@ -50,7 +50,7 @@
           this.el.sceneEl.removeEventListener("twofingermove", this.handleScale);
         },
         
-        handleRotation: function (event) {
+        handleTranslation: function (event) {
           if (this.isVisible) {
             // 1本指スワイプの移動量に応じてオブジェクトの座標 (position) を変更
             this.el.object3D.position.x +=
