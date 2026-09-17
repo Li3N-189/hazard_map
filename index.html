@@ -8,43 +8,75 @@
     <!-- AR.js の読み込み -->
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
     <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-detector.js"></script>
-    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-handler.js"></script>
     <script>
       // 1本指スワイプで平行移動（Pan）を行うカスタムコンポーネント
-      AFRAME.registerComponent("pan-handler", {
+      AFRAME.registerComponent("gesture-handler", {
         schema: {
-          factor: { type: "number", default: 0.005 } // 移動速度の調整用フラグメント
+          enabled: { default: true },
+          translationFactor: { default: 0.01 }, // 移動速度の調整用プロパティ
+          minScale: { default: 0.3 },
+          maxScale: { default: 8 },
         },
-
+      
         init: function () {
-          this.handleMove = this.handleMove.bind(this);
-          this.sceneEl = this.el.sceneEl;
-          
-          // gesture-detector の onefingermove イベントをリッスン
-          this.sceneEl.addEventListener("onefingermove", this.handleMove);
-        },
-
-        remove: function () {
-          this.sceneEl.removeEventListener("onefingermove", this.handleMove);
-        },
-
-        handleMove: function (event) {
-          // イベントの移動量を取得
-          const detail = event.detail;
-          const currentPosition = this.el.getAttribute("position");
-
-          // X軸（横）と Z軸（前後・奥行き）の移動量を計算
-          // ※カメラの向きや座標系に合わせて符号 (+ / -) を調整してください
-          const newX = currentPosition.x + detail.positionChange.x * this.data.factor;
-          const newZ = currentPosition.z + detail.positionChange.y * this.data.factor;
-
-          // オブジェクトの位置を更新
-          this.el.setAttribute("position", {
-            x: newX,
-            y: currentPosition.y, // Y軸（高さ）は固定
-            z: newZ
+          this.handleScale = this.handleScale.bind(this);
+          this.handleTranslation = this.handleTranslation.bind(this); // 回転から平行移動に変更
+      
+          this.isVisible = false;
+          this.initialScale = this.el.object3D.scale.clone();
+          this.scaleFactor = 1;
+      
+          this.el.sceneEl.addEventListener("markerFound", (e) => {
+            this.isVisible = true;
           });
-        }
+      
+          this.el.sceneEl.addEventListener("markerLost", (e) => {
+            this.isVisible = false;
+          });
+        },
+      
+        update: function () {
+          if (this.data.enabled) {
+            this.el.sceneEl.addEventListener("onefingermove", this.handleTranslation);
+            this.el.sceneEl.addEventListener("twofingermove", this.handleScale);
+          } else {
+            this.el.sceneEl.removeEventListener("onefingermove", this.handleTranslation);
+            this.el.sceneEl.removeEventListener("twofingermove", this.handleScale);
+          }
+        },
+      
+        remove: function () {
+          this.el.sceneEl.removeEventListener("onefingermove", this.handleTranslation);
+          this.el.sceneEl.removeEventListener("twofingermove", this.handleScale);
+        },
+        
+        handleRotation: function (event) {
+          if (this.isVisible) {
+            // 1本指スワイプの移動量に応じてオブジェクトの座標 (position) を変更
+            this.el.object3D.position.x +=
+              event.detail.positionChange.x * this.data.translationFactor;
+            
+            // カメラの向きやAR表示に応じて、上下スワイプを Y軸（上下）か Z軸（奥行き）にするか調整してください
+            this.el.object3D.position.y -=
+              event.detail.positionChange.y * this.data.translationFactor;
+          }
+        },
+      
+        handleScale: function (event) {
+          if (this.isVisible) {
+            this.scaleFactor *=
+              1 + event.detail.spreadChange / event.detail.startSpread;
+      
+            this.scaleFactor = Math.min(
+              Math.max(this.scaleFactor, this.data.minScale),
+              this.data.maxScale
+            );
+      
+            this.el.object3D.scale.x = this.scaleFactor * this.initialScale.x;
+            this.el.object3D.scale.y = this.scaleFactor * this.initialScale.y;
+            this.el.object3D.scale.z = this.scaleFactor * this.initialScale.z;
+          }
+        },
       });
     </script>
   </head>
@@ -66,8 +98,7 @@
         <!-- 3. OBJモデルの配置 -->
         <a-entity
           class="cantap"
-          pan-handler="factor: 0.005"
-          gesture-handler="minScale: 0.25; maxScale: 8; enableRotation: false;"
+          gesture-handler="minScale: 0.25; maxScale: 8;"
           obj-model="obj: #my-obj; mtl: #my-mtl"
           scale="0.0065 0.0065 0.0065" 
           position="0.5 0 -0.5" 
