@@ -97,7 +97,7 @@
   </head>
   <body style="margin: 0; overflow: hidden;">
     <div id="ui">
-      <input id="depth" type="range" min="0" max="0.2" value="0.1" step="0.005">
+      <input id="depth" type="range" min="0" max="0.2" value="0" step="0.001">
     </div>
     <!-- AR用のシーン設定 -->
     <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector>
@@ -122,9 +122,9 @@
           </a-entity>
           <a-box
             id="water"
-            material="color: #08f; transparent: true; opacity: 0.5;"
-            position="0 0.5 0"
-            scale="1 1 1">
+            material="color: #08f; transparent: true; opacity: 0.5; polygonOffset: true; polygonOffsetFactor: -1; polygonOffsetUnits: -1"
+            position="0 0 0"
+            scale="1 0 1">
           </a-box>
         </a-entity>
       </a-marker>
