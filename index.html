@@ -97,7 +97,7 @@
   </head>
   <body style="margin: 0; overflow: hidden;">
     <div id="ui">
-      <input type="range" min="0" max="11" value="2">
+      <input id="depth" type="range" min="0" max="0.2" value="0.1" step="0.005">
     </div>
     <!-- AR用のシーン設定 -->
     <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector>
@@ -121,6 +121,7 @@
             rotation="0 0 0">
           </a-entity>
           <a-box
+            id="water"
             material="color: #08f; transparent: true; opacity: 0.5;"
             position="0 0.5 0"
             scale="1 1 1">
@@ -132,5 +133,14 @@
       <a-entity camera></a-entity>
 
     </a-scene>
+    <script>
+      const depthElem = document.querySelector('#depth');
+      const waterElem = document.querySelector('#water');
+      depthElem.addEventListener('input', (e) => {
+        let value = e.target.value;
+        waterElem.object3D.position.y = value / 2;
+        waterElem.object3D.scale.y = value;
+      });
+    </script>
   </body>
 </html>
