@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>AR.js GSI 3D Terrain</title>
+    <!-- A-Frame の読み込み -->
+    <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
+    <!-- AR.js の読み込み -->
+    <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
+    <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-detector.js"></script>
+    <script>
+      // 緯度経度・ズームレベルからタイル座標(x, y)を計算
+      function latLonToTile(lat, lon, zoom) {
+        const n = Math.pow(2, zoom);
+        const rad = lat * Math.PI / 180;
+        const x = Math.floor((lon + 180) / 360 * n);
+        const y = Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n);
+        return { x, y };
+      }
+
+      // 国土地理院 DEM PNGのピクセル(RGB)から標高(m)を算出
+      function getElevation(imgData, x, y) {
+        const idx = (y * imgData.width + x) * 4;
+        const r = imgData.data[idx];
+        const g = imgData.data[idx + 1];
+        const b = imgData.data[idx + 2];
+
+        // u = 2^16 * R + 2^8 * G + B
+        const u = r * 65536 + g * 256 + b;
+
+        if (u === 8388608) return 0; // データなし(海など)
+        return (u < 8388608) ? (u * 0.01) : ((u - 16777216) * 0.01);
+      }
+
+      // 標高タイル画像(PNG)の読み込み
+      function loadDEMTile(url) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'Anonymous';
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+            resolve(ctx.getImageData(0, 0, img.width, img.height));
+          };
+          img.onerror = () => reject(new Error('DEMタイルの取得に失敗しました'));
+          img.src = url;
+        });
+      }
+
+      // 国土地理院 地形3Dメッシュ生成コンポーネント
+      AFRAME.registerComponent('gsi-terrain', {
+        schema: {
+          lat: { type: 'number', default: 35.3606 },       // 富士山
+          lon: { type: 'number', default: 138.7274 },
+          zoom: { type: 'int', default: 12 },             // 推奨: 9 ～ 14
+          heightScale: { type: 'number', default: 1.0 },   // 高さの強調倍率
+          tileType: { type: 'string', default: 'std' }     // 地図の種類 (std: 標準地図, seamlessphoto: 写真)
+        },
+
+        init: function () {
+          this.loadTerrain();
+        },
+
+        update: function (oldData) {
+          if (oldData.lat !== this.data.lat || oldData.lon !== this.data.lon || oldData.zoom !== this.data.zoom || oldData.heightScale !== this.data.heightScale) {
+            this.loadTerrain();
+          }
+        },
+
+        loadTerrain: async function () {
+          const { lat, lon, zoom, heightScale, tileType } = this.data;
+
+          // 1. タイル座標の計算
+          const tile = latLonToTile(lat, lon, zoom);
+
+          // 2. 実タイルの物理幅(メートル)を計算 (赤道半径 R ≈ 6378137m)
+          const R = 6378137;
+          const latRad = lat * Math.PI / 180;
+          const tileSizeMeters = (2 * Math.PI * R * Math.cos(latRad)) / Math.pow(2, zoom);
+
+          // 3. AR空間でのサイズ設定 (1.0m 四方)
+          const targetSize = 1.0;
+
+          // 国土地理院 タイルURL
+          const demUrl = `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${zoom}/${tile.x}/${tile.y}.png`;
+          const imgUrl = `https://cyberjapandata.gsi.go.jp/xyz/${tileType}/${zoom}/${tile.x}/${tile.y}.png`;
+
+          try {
+            // DEM画像データと地図テクスチャの並行ロード
+            const [demData, texture] = await Promise.all([
+              loadDEMTile(demUrl),
+              new Promise((resolve) => {
+                new THREE.TextureLoader().setCrossOrigin('anonymous').load(imgUrl, resolve, undefined, () => resolve(null));
+              })
+            ]);
+
+            // 256x256 グリッドの PlaneGeometry 生成
+            const widthSegments = 255;
+            const heightSegments = 255;
+            const geometry = new THREE.PlaneGeometry(targetSize, targetSize, widthSegments, heightSegments);
+            const posAttr = geometry.attributes.position;
+
+            // 標高データをメッシュの頂点高度(Z)に適用
+            for (let y = 0; y <= heightSegments; y++) {
+              for (let x = 0; x <= widthSegments; x++) {
+                const index = y * (widthSegments + 1) + x;
+                const h = getElevation(demData, x, y);
+                // メートル単位の標高を AR 空間上の高さスケールに割り当て
+                const hScale = (h / tileSizeMeters) * targetSize * heightScale;
+                posAttr.setZ(index, hScale);
+              }
+            }
+
+            geometry.computeVertexNormals();
+
+            // マテリアルの作成 (光の影響を受ける StandardMaterial)
+            const material = new THREE.MeshStandardMaterial({
+              map: texture,
+              roughness: 0.8,
+              metalness: 0.1,
+              side: THREE.DoubleSide
+            });
+
+            const mesh = new THREE.Mesh(geometry, material);
+            // X軸を-90度回転して、XZ平面(水平面)に倒す (高さ方向をY軸にする)
+            mesh.rotation.x = -Math.PI / 2;
+
+            // 既存のメッシュを消去して新しいメッシュを追加
+            while (this.el.object3D.children.length > 0) {
+              this.el.object3D.remove(this.el.object3D.children[0]);
+            }
+            this.el.object3D.add(mesh);
+
+          } catch (err) {
+            console.error('地形データの取得・生成に失敗しました:', err);
+          }
+        }
+      });
+
+      // 1本指スワイプで移動、2本指で拡大縮小するカスタムコンポーネント
+      AFRAME.registerComponent("gesture-handler", {
+        schema: {
+          enabled: { default: true },
+          translationFactor: { default: 1 },
+          minScale: { default: 0.3 },
+          maxScale: { default: 8 },
+        },
+        init: function () {
+          this.handleScale = this.handleScale.bind(this);
+          this.handleTranslation = this.handleTranslation.bind(this);
+          this.isVisible = false;
+          this.initialScale = this.el.object3D.scale.clone();
+          this.scaleFactor = 1;
+
+          this.el.sceneEl.addEventListener("markerFound", () => { this.isVisible = true; });
+          this.el.sceneEl.addEventListener("markerLost", () => { this.isVisible = false; });
+        },
+        update: function () {
+          if (this.data.enabled) {
+            this.el.sceneEl.addEventListener("onefingermove", this.handleTranslation);
+            this.el.sceneEl.addEventListener("twofingermove", this.handleScale);
+          } else {
+            this.el.sceneEl.removeEventListener("onefingermove", this.handleTranslation);
+            this.el.sceneEl.removeEventListener("twofingermove", this.handleScale);
+          }
+        },
+        remove: function () {
+          this.el.sceneEl.removeEventListener("onefingermove", this.handleTranslation);
+          this.el.sceneEl.removeEventListener("twofingermove", this.handleScale);
+        },
+        handleTranslation: function (event) {
+          if (this.isVisible) {
+            this.el.object3D.position.x += event.detail.positionChange.x * this.data.translationFactor;
+            this.el.object3D.position.z += event.detail.positionChange.y * this.data.translationFactor;
+          }
+        },
+        handleScale: function (event) {
+          if (this.isVisible) {
+            this.scaleFactor *= 1 + event.detail.spreadChange / event.detail.startSpread;
+            this.scaleFactor = Math.min(Math.max(this.scaleFactor, this.data.minScale), this.data.maxScale);
+            this.el.object3D.scale.x = this.scaleFactor * this.initialScale.x;
+            this.el.object3D.scale.y = this.scaleFactor * this.initialScale.y;
+            this.el.object3D.scale.z = this.scaleFactor * this.initialScale.z;
+          }
+        },
+      });
+    </script>
+    <style>
+      /* 設定UIフォームのスタイル */
+      #params-ui {
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        z-index: 10;
+        background: rgba(255, 255, 255, 0.85);
+        padding: 10px;
+        border-radius: 8px;
+        font-family: sans-serif;
+        font-size: 12px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      }
+      #params-ui input, #params-ui select, #params-ui button {
+        margin: 2px 0 6px 0;
+        width: 100%;
+        box-sizing: border-box;
+      }
+      /* 水面高さ操作UIのスタイル */
+      div#ui {
+        position: fixed;
+        right: 0;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        height: 100%;
+      }
+      div#ui > input[type="range"] {
+        height: 50vh;
+        writing-mode: vertical-lr;
+        padding: 2vh;
+      }
+    </style>
+  </head>
+  <body style="margin: 0; overflow: hidden;">
+    <!-- 左上: 緯度経度指定フォーム -->
+    <div id="params-ui">
+      <form id="location-form">
+        <label>緯度 (Lat):
+          <input type="number" id="lat-input" step="any" required>
+        </label>
+        <label>経度 (Lon):
+          <input type="number" id="lon-input" step="any" required>
+        </label>
+        <label>ズーム (9-14):
+          <input type="number" id="zoom-input" min="9" max="14" step="1" required>
+        </label>
+        <label>高さ強調:
+          <input type="number" id="scale-input" min="0.1" max="10" step="0.1" value="1.0">
+        </label>
+        <button type="submit">表示更新</button>
+      </form>
+    </div>
+
+    <!-- 右側: 水位コントロール -->
+    <div id="ui">
+      <input id="depth" type="range" min="0" max="0.2" value="0" step="0.001">
+    </div>
+
+    <!-- AR用のシーン設定 -->
+    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector renderer="logarithmicDepthBuffer: true;">
+      
+      <!-- 地形に立体感を与えるライト -->
+      <a-light type="ambient" intensity="0.6"></a-light>
+      <a-light type="directional" position="1 2 1" intensity="0.8"></a-light>
+
+      <!-- 2. マーカーの設定 -->
+      <a-marker preset="custom" type='pattern' url="pattern-marker.patt">
+        <a-entity
+            class="cantap"
+            gesture-handler="minScale: 0.25; maxScale: 8;">
+          
+          <!-- 動的標高3Dモデル (gsi-terrain) -->
+          <a-entity
+            id="terrain"
+            gsi-terrain="lat: 35.3606; lon: 138.7274; zoom: 12;"
+            position="0 0 0">
+          </a-entity>
+
+          <!-- 水面オブジェクト -->
+          <a-box
+            id="water"
+            material="color: #08f; transparent: true; opacity: 0.5; depthWrite: false"
+            position="0 0 0"
+            scale="1 0 1">
+          </a-box>
+        </a-entity>
+      </a-marker>
+
+      <!-- カメラの追加 -->
+      <a-entity camera="near: 0.05; far: 20;"></a-entity>
+
+    </a-scene>
+
+    <script>
+      // URLパラメータの取得
+      const urlParams = new URLSearchParams(window.location.search);
+      const lat = parseFloat(urlParams.get('lat')) || 35.3606;      // デフォルト: 富士山
+      const lon = parseFloat(urlParams.get('lon')) || 138.7274;
+      const zoom = parseInt(urlParams.get('zoom')) || 12;            // 国土地理院標高タイルの推奨ズーム (9-14)
+      const heightScale = parseFloat(urlParams.get('heightScale')) || 1.0;
+
+      // フォームの初期値をセット
+      document.getElementById('lat-input').value = lat;
+      document.getElementById('lon-input').value = lon;
+      document.getElementById('zoom-input').value = zoom;
+      document.getElementById('scale-input').value = heightScale;
+
+      // 地形エンティティにパラメータを設定
+      const terrainElem = document.querySelector('#terrain');
+      terrainElem.setAttribute('gsi-terrain', `lat: ${lat}; lon: ${lon}; zoom: ${zoom}; heightScale: ${heightScale};`);
+
+      // UIフォームからの更新処理 (URLを更新して読み直し)
+      document.getElementById('location-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const newLat = document.getElementById('lat-input').value;
+        const newLon = document.getElementById('lon-input').value;
+        const newZoom = document.getElementById('zoom-input').value;
+        const newScale = document.getElementById('scale-input').value;
+
+        const params = new URLSearchParams(window.location.search);
+        params.set('lat', newLat);
+        params.set('lon', newLon);
+        params.set('zoom', newZoom);
+        params.set('heightScale', newScale);
+
+        window.location.search = params.toString();
+      });
+
+      // 水面コントロール
+      const depthElem = document.querySelector('#depth');
+      const waterElem = document.querySelector('#water');
+      depthElem.addEventListener('input', (e) => {
+        let value = e.target.value;
+        waterElem.object3D.position.y = value / 2;
+        waterElem.object3D.scale.y = value;
+      });
+    </script>
+  </body>
+</html>
