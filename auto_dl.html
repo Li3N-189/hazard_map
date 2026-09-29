@@ -2,19 +2,19 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>AR.js GSI 3D Terrain</title>
+    <title>AR.js GSI 3D Terrain with Pin</title>
     <!-- A-Frame の読み込み -->
     <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
     <!-- AR.js の読み込み -->
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
     <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-detector.js"></script>
     <script>
-      // 緯度経度・ズームレベルからタイル座標(x, y)を計算
-      function latLonToTile(lat, lon, zoom) {
+      // 緯度経度・ズームレベルからタイル座標(x, y)の「正確な浮動小数点値」を計算
+      function latLonToTileExact(lat, lon, zoom) {
         const n = Math.pow(2, zoom);
         const rad = lat * Math.PI / 180;
-        const x = Math.floor((lon + 180) / 360 * n);
-        const y = Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n);
+        const x = (lon + 180) / 360 * n;
+        const y = (1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * n;
         return { x, y };
       }
 
@@ -25,9 +25,7 @@
         const g = imgData.data[idx + 1];
         const b = imgData.data[idx + 2];
 
-        // u = 2^16 * R + 2^8 * G + B
         const u = r * 65536 + g * 256 + b;
-
         if (u === 8388608) return 0; // データなし(海など)
         return (u < 8388608) ? (u * 0.01) : ((u - 16777216) * 0.01);
       }
@@ -57,7 +55,7 @@
           lon: { type: 'number', default: 138.7274 },
           zoom: { type: 'int', default: 12 },             // 推奨: 9 ～ 14
           heightScale: { type: 'number', default: 1.0 },   // 高さの強調倍率
-          tileType: { type: 'string', default: 'std' }     // 地図の種類 (std: 標準地図, seamlessphoto: 写真)
+          tileType: { type: 'string', default: 'std' }     // 地図の種類
         },
 
         init: function () {
@@ -73,8 +71,14 @@
         loadTerrain: async function () {
           const { lat, lon, zoom, heightScale, tileType } = this.data;
 
-          // 1. タイル座標の計算
-          const tile = latLonToTile(lat, lon, zoom);
+          // 1. タイル座標の計算 (整数部がタイル番号、小数部がタイル内の位置)
+          const exactTile = latLonToTileExact(lat, lon, zoom);
+          const tileX = Math.floor(exactTile.x);
+          const tileY = Math.floor(exactTile.y);
+          
+          // タイル内での割合 (0.0 〜 1.0, 左上起点)
+          const fractionX = exactTile.x - tileX;
+          const fractionY = exactTile.y - tileY;
 
           // 2. 実タイルの物理幅(メートル)を計算 (赤道半径 R ≈ 6378137m)
           const R = 6378137;
@@ -85,11 +89,10 @@
           const targetSize = 1.0;
 
           // 国土地理院 タイルURL
-          const demUrl = `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${zoom}/${tile.x}/${tile.y}.png`;
-          const imgUrl = `https://cyberjapandata.gsi.go.jp/xyz/${tileType}/${zoom}/${tile.x}/${tile.y}.png`;
+          const demUrl = `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${zoom}/${tileX}/${tileY}.png`;
+          const imgUrl = `https://cyberjapandata.gsi.go.jp/xyz/${tileType}/${zoom}/${tileX}/${tileY}.png`;
 
           try {
-            // DEM画像データと地図テクスチャの並行ロード
             const [demData, texture] = await Promise.all([
               loadDEMTile(demUrl),
               new Promise((resolve) => {
@@ -97,26 +100,22 @@
               })
             ]);
 
-            // 256x256 グリッドの PlaneGeometry 生成
+            // --- 地形メッシュの生成 ---
             const widthSegments = 255;
             const heightSegments = 255;
             const geometry = new THREE.PlaneGeometry(targetSize, targetSize, widthSegments, heightSegments);
             const posAttr = geometry.attributes.position;
 
-            // 標高データをメッシュの頂点高度(Z)に適用
             for (let y = 0; y <= heightSegments; y++) {
               for (let x = 0; x <= widthSegments; x++) {
                 const index = y * (widthSegments + 1) + x;
                 const h = getElevation(demData, x, y);
-                // メートル単位の標高を AR 空間上の高さスケールに割り当て
                 const hScale = (h / tileSizeMeters) * targetSize * heightScale;
                 posAttr.setZ(index, hScale);
               }
             }
-
             geometry.computeVertexNormals();
 
-            // マテリアルの作成 (光の影響を受ける StandardMaterial)
             const material = new THREE.MeshStandardMaterial({
               map: texture,
               roughness: 0.8,
@@ -125,49 +124,39 @@
             });
 
             const mesh = new THREE.Mesh(geometry, material);
-            // X軸を-90度回転して、XZ平面(水平面)に倒す (高さ方向をY軸にする)
-            mesh.rotation.x = -Math.PI / 2;
+            mesh.rotation.x = -Math.PI / 2; // 水平に倒す
 
-            // 既存のメッシュを消去して新しいメッシュを追加
+            // --- ピン（マーカー）の生成 ---
+            // ピクセル単位の正確な位置の標高を取得
+            const px = Math.min(Math.floor(fractionX * 256), 255);
+            const py = Math.min(Math.floor(fractionY * 256), 255);
+            const exactH = getElevation(demData, px, py);
+            const exactHScale = (exactH / tileSizeMeters) * targetSize * heightScale;
+
+            // AR空間(1.0m四方)上のローカル座標。中心が(0,0)になるよう調整
+            const pinX = (fractionX - 0.5) * targetSize;
+            const pinZ = (fractionY - 0.5) * targetSize;
+            const pinY = exactHScale;
+
+            // 円錐形の赤いピンを作成
+            const pinHeight = 0.1;
+            const pinGeo = new THREE.ConeGeometry(0.015, pinHeight, 16);
+            const pinMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const pinMesh = new THREE.Mesh(pinGeo, pinMat);
+
+            // Coneはデフォルトで先端が上を向いているため、180度反転させて下を向かせる
+            pinMesh.rotation.x = Math.PI;
+            
+            // 先端（下部）が地形の頂点に接するように高さを調整
+            pinMesh.position.set(pinX, pinY + (pinHeight / 2), pinZ);
+
+
+            // --- シーンへの追加 ---
             while (this.el.object3D.children.length > 0) {
               this.el.object3D.remove(this.el.object3D.children[0]);
             }
-            this.el.object3D.add(mesh);
-            // --- 既存のコード (this.el.object3D.add(mesh);) の直下に追加 ---
-
-            // 4. 指定された緯度経度のタイル内での詳細位置(0.0〜1.0)を計算
-            const worldX = (lon + 180) / 360 * Math.pow(2, zoom);
-            const worldY = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom);
-            
-            // 小数部分がタイル内の相対座標 (左上が0,0、右下が1,1)
-            const u = worldX - Math.floor(worldX);
-            const v = worldY - Math.floor(worldY);
-
-            // 3D空間上のローカル座標に変換 (Planeの中心が0,0のため -0.5 する)
-            const localX = (u - 0.5) * targetSize;
-            const localZ = (v - 0.5) * targetSize;
-
-            // その地点の標高を取得してY座標(高さ)を決定
-            const px = Math.floor(u * 255);
-            const py = Math.floor(v * 255);
-            const pointElevation = getElevation(demData, px, py);
-            const pointHeight = (pointElevation / tileSizeMeters) * targetSize * heightScale;
-
-            // 5. マーカー(ピン)を生成して配置
-            let pin = this.el.querySelector('.location-pin');
-            if (!pin) {
-              pin = document.createElement('a-cone');
-              pin.setAttribute('class', 'location-pin');
-              pin.setAttribute('color', '#ff0000'); // 赤色
-              pin.setAttribute('radius-bottom', '0.02');
-              pin.setAttribute('height', '0.1');
-              // 先端が下を向くように反転
-              pin.setAttribute('rotation', '180 0 0'); 
-              this.el.appendChild(pin);
-            }
-            
-            // ピンの先端が地面に接するように高さを調整 (コーンの中心が基準のため +0.05)
-            pin.setAttribute('position', `${localX} ${pointHeight + 0.05} ${localZ}`);
+            this.el.object3D.add(mesh);     // 地形
+            this.el.object3D.add(pinMesh);  // ピン
 
           } catch (err) {
             console.error('地形データの取得・生成に失敗しました:', err);
@@ -175,21 +164,15 @@
         }
       });
 
-      // 1本指スワイプで移動、2本指で拡大縮小するカスタムコンポーネント
+      // 1本指スワイプで移動、2本指で拡大縮小するカスタムコンポーネント (変更なし)
       AFRAME.registerComponent("gesture-handler", {
-        schema: {
-          enabled: { default: true },
-          translationFactor: { default: 1 },
-          minScale: { default: 0.3 },
-          maxScale: { default: 8 },
-        },
+        schema: { enabled: { default: true }, translationFactor: { default: 1 }, minScale: { default: 0.3 }, maxScale: { default: 8 } },
         init: function () {
           this.handleScale = this.handleScale.bind(this);
           this.handleTranslation = this.handleTranslation.bind(this);
           this.isVisible = false;
           this.initialScale = this.el.object3D.scale.clone();
           this.scaleFactor = 1;
-
           this.el.sceneEl.addEventListener("markerFound", () => { this.isVisible = true; });
           this.el.sceneEl.addEventListener("markerLost", () => { this.isVisible = false; });
         },
@@ -224,75 +207,71 @@
       });
     </script>
     <style>
-      /* 水面高さ操作UIのスタイル */
-      div#ui {
-        position: fixed;
-        right: 0;
-        z-index: 1;
-        display: flex;
-        align-items: center;
-        height: 100%;
+      #params-ui {
+        position: fixed; top: 10px; left: 10px; z-index: 10;
+        background: rgba(255, 255, 255, 0.85); padding: 10px; border-radius: 8px;
+        font-family: sans-serif; font-size: 12px; box-shadow: 0 2px 6px rgba(0,0,0,0.3);
       }
-      div#ui > input[type="range"] {
-        height: 50vh;
-        writing-mode: vertical-lr;
-        padding: 2vh;
+      #params-ui input, #params-ui select, #params-ui button {
+        margin: 2px 0 6px 0; width: 100%; box-sizing: border-box;
       }
+      div#ui { position: fixed; right: 0; z-index: 1; display: flex; align-items: center; height: 100%; }
+      div#ui > input[type="range"] { height: 50vh; writing-mode: vertical-lr; padding: 2vh; }
     </style>
   </head>
   <body style="margin: 0; overflow: hidden;">
+    <div id="params-ui">
+      <form id="location-form">
+        <label>緯度 (Lat):<input type="number" id="lat-input" step="any" required></label>
+        <label>経度 (Lon):<input type="number" id="lon-input" step="any" required></label>
+        <label>ズーム (9-14):<input type="number" id="zoom-input" min="9" max="14" step="1" required></label>
+        <label>高さ強調:<input type="number" id="scale-input" min="0.1" max="10" step="0.1" value="1.0"></label>
+        <button type="submit">表示更新</button>
+      </form>
+    </div>
+
     <div id="ui">
       <input id="depth" type="range" min="0" max="0.2" value="0" step="0.001">
     </div>
 
-    <!-- AR用のシーン設定 -->
     <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector renderer="logarithmicDepthBuffer: true;">
-      
-      <!-- 地形に立体感を与えるライト -->
       <a-light type="ambient" intensity="0.6"></a-light>
       <a-light type="directional" position="1 2 1" intensity="0.8"></a-light>
 
-      <!-- 2. マーカーの設定 -->
       <a-marker preset="custom" type='pattern' url="pattern-marker.patt">
-        <a-entity
-            class="cantap"
-            gesture-handler="minScale: 0.25; maxScale: 8;">
-          
-          <!-- 動的標高3Dモデル (gsi-terrain) -->
-          <a-entity
-            id="terrain"
-            gsi-terrain="lat: 35.3606; lon: 138.7274; zoom: 12;"
-            position="0 0 0">
-          </a-entity>
-
-          <!-- 水面オブジェクト -->
-          <a-box
-            id="water"
-            material="color: #08f; transparent: true; opacity: 0.5; depthWrite: false"
-            position="0 0 0"
-            scale="1 0 1">
-          </a-box>
+        <a-entity class="cantap" gesture-handler="minScale: 0.25; maxScale: 8;">
+          <a-entity id="terrain" gsi-terrain="lat: 35.3606; lon: 138.7274; zoom: 12;" position="0 0 0"></a-entity>
+          <a-box id="water" material="color: #08f; transparent: true; opacity: 0.5; depthWrite: false" position="0 0 0" scale="1 0 1"></a-box>
         </a-entity>
       </a-marker>
-
-      <!-- カメラの追加 -->
       <a-entity camera="near: 0.05; far: 20;"></a-entity>
-
     </a-scene>
 
     <script>
-      // URLパラメータの取得
       const urlParams = new URLSearchParams(window.location.search);
-      const lat = parseFloat(urlParams.get('lat')) || 35.3606;      // デフォルト: 富士山
+      const lat = parseFloat(urlParams.get('lat')) || 35.3606;
       const lon = parseFloat(urlParams.get('lon')) || 138.7274;
-      const zoom = parseInt(urlParams.get('zoom')) || 12;            // 国土地理院標高タイルの推奨ズーム (9-14)
+      const zoom = parseInt(urlParams.get('zoom')) || 12;
       const heightScale = parseFloat(urlParams.get('heightScale')) || 1.0;
 
-      // 地形エンティティにパラメータを設定
+      document.getElementById('lat-input').value = lat;
+      document.getElementById('lon-input').value = lon;
+      document.getElementById('zoom-input').value = zoom;
+      document.getElementById('scale-input').value = heightScale;
+
       const terrainElem = document.querySelector('#terrain');
       terrainElem.setAttribute('gsi-terrain', `lat: ${lat}; lon: ${lon}; zoom: ${zoom}; heightScale: ${heightScale};`);
 
-      // 水面コントロール
+      document.getElementById('location-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const params = new URLSearchParams(window.location.search);
+        params.set('lat', document.getElementById('lat-input').value);
+        params.set('lon', document.getElementById('lon-input').value);
+        params.set('zoom', document.getElementById('zoom-input').value);
+        params.set('heightScale', document.getElementById('scale-input').value);
+        window.location.search = params.toString();
+      });
+
       const depthElem = document.querySelector('#depth');
       const waterElem = document.querySelector('#water');
       depthElem.addEventListener('input', (e) => {
