@@ -139,9 +139,9 @@
             const pinY = exactHScale;
 
             // 円錐形の赤いピンを作成
-            const pinHeight = 0.1;
-            const pinGeo = new THREE.ConeGeometry(0.015, pinHeight, 16);
-            const pinMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            const pinHeight = 0.15;
+            const pinGeo = new THREE.ConeGeometry(0.02, pinHeight, 16);
+            const pinMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
             const pinMesh = new THREE.Mesh(pinGeo, pinMat);
 
             // Coneはデフォルトで先端が上を向いているため、180度反転させて下を向かせる
