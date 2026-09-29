@@ -133,6 +133,41 @@
               this.el.object3D.remove(this.el.object3D.children[0]);
             }
             this.el.object3D.add(mesh);
+            // --- 既存のコード (this.el.object3D.add(mesh);) の直下に追加 ---
+
+            // 4. 指定された緯度経度のタイル内での詳細位置(0.0〜1.0)を計算
+            const worldX = (lon + 180) / 360 * Math.pow(2, zoom);
+            const worldY = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom);
+            
+            // 小数部分がタイル内の相対座標 (左上が0,0、右下が1,1)
+            const u = worldX - Math.floor(worldX);
+            const v = worldY - Math.floor(worldY);
+
+            // 3D空間上のローカル座標に変換 (Planeの中心が0,0のため -0.5 する)
+            const localX = (u - 0.5) * targetSize;
+            const localZ = (v - 0.5) * targetSize;
+
+            // その地点の標高を取得してY座標(高さ)を決定
+            const px = Math.floor(u * 255);
+            const py = Math.floor(v * 255);
+            const pointElevation = getElevation(demData, px, py);
+            const pointHeight = (pointElevation / tileSizeMeters) * targetSize * heightScale;
+
+            // 5. マーカー(ピン)を生成して配置
+            let pin = this.el.querySelector('.location-pin');
+            if (!pin) {
+              pin = document.createElement('a-cone');
+              pin.setAttribute('class', 'location-pin');
+              pin.setAttribute('color', '#ff0000'); // 赤色
+              pin.setAttribute('radius-bottom', '0.02');
+              pin.setAttribute('height', '0.1');
+              // 先端が下を向くように反転
+              pin.setAttribute('rotation', '180 0 0'); 
+              this.el.appendChild(pin);
+            }
+            
+            // ピンの先端が地面に接するように高さを調整 (コーンの中心が基準のため +0.05)
+            pin.setAttribute('position', `${localX} ${pointHeight + 0.05} ${localZ}`);
 
           } catch (err) {
             console.error('地形データの取得・生成に失敗しました:', err);
