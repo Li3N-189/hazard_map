@@ -194,6 +194,7 @@
                   }
                   navigator.classList.remove('invisible');
                   
+                  const navRect = navigator.getBoundingClientRect();
                   screenX = Math.max(navRect.width / 2 + 10, Math.min(window.innerWidth - navRect.width / 2 - 10, screenX));
                   screenY = Math.max(navRect.height / 2 + 10, Math.min(window.innerHeight - navRect.height / 2 - 10, screenY));
                 
