@@ -201,7 +201,7 @@
                   if (screenX < 0) navigator.classList.add('pointing-left');
                   if (screenX > window.innerWidth) navigator.classList.add('pointing-right');
                   if (screenY < 0) navigator.classList.add('pointing-up');
-                  if (screenY > window.iinnerHeight) navigator.classList.add('pointing-down');
+                  if (screenY > window.innerHeight) navigator.classList.add('pointing-down');
                   
                   const navRect = navigator.getBoundingClientRect();
                   screenX = Math.max(navRect.width / 2 + 10, Math.min(window.innerWidth - navRect.width / 2 - 10, screenX));
@@ -276,7 +276,7 @@
       #navigator {
         position: fixed;
         display: inline-block;
-        padding: 2vh;
+        padding: 2.5vh;
         background-color: rgba(255, 0, 0, 0.8);
         color: white;
         font-size: 2vh;
