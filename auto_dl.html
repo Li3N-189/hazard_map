@@ -193,11 +193,6 @@
                     navigator.innerText = 'ピンの位置';
                   }
                   navigator.classList.remove('invisible');
-                  
-                  const navRect = navigator.getBoundingClientRect();
-                  screenX = Math.max(navRect.width / 2 + 10, Math.min(window.innerWidth - navRect.width / 2 - 10, screenX));
-                  screenY = Math.max(navRect.height / 2 + 10, Math.min(window.innerHeight - navRect.height / 2 - 10, screenY));
-
                   navigator.classList.remove('pointing-left');
                   navigator.classList.remove('pointing-right');
                   navigator.classList.remove('pointing-up');
@@ -207,6 +202,10 @@
                   if (screenX > window.innerWidth) navigator.classList.add('pointing-right');
                   if (screenY < 0) navigator.classList.add('pointing-up');
                   if (screenY > window.iinnerHeight) navigator.classList.add('pointing-down');
+                  
+                  const navRect = navigator.getBoundingClientRect();
+                  screenX = Math.max(navRect.width / 2 + 10, Math.min(window.innerWidth - navRect.width / 2 - 10, screenX));
+                  screenY = Math.max(navRect.height / 2 + 10, Math.min(window.innerHeight - navRect.height / 2 - 10, screenY));
                   
                   navigator.style.top = screenY + 'px';
                   navigator.style.left = screenX + 'px';
