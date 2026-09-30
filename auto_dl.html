@@ -167,29 +167,42 @@
             let pinMesh = this.el.object3D.children[1];
             let scene = document.querySelector('a-scene');
             let markerEl = document.querySelector("a-marker");
+            let navigator = document.querySelector('span#navigator');
+            
+            let shown = false;
+            
             if (scene?.camera && markerEl?.object3D?.visible) {
               let worldPos = new THREE.Vector3();
               pinMesh.getWorldPosition(worldPos);
               worldPos.project(scene.camera);
-              
-              const widthHalf = window.innerWidth / 2;
-              const heightHalf = window.innerHeight / 2;
-              
-              const screenX = (worldPos.x * widthHalf) + widthHalf;
-              const screenY = -(worldPos.y * heightHalf) + heightHalf;
-
-              const wrapper = document.querySelector('div#fixed-overlay');
-              if (wrapper) {
-                let navigator = document.querySelector('span#navigator');
-                if (!navigator) {
-                  navigator = document.createElement('span');
-                  wrapper.appendChild(navigator);
-                  navigator.id = 'navigator';
-                  navigator.innerText = 'ピンの位置';
+              if (worldPos.x < -1 || worldPos.x > 1 || worldPos.y < -1 || worldPos.y > 1) {
+                const widthHalf = window.innerWidth / 2;
+                const heightHalf = window.innerHeight / 2;
+                
+                let screenX = (worldPos.x * widthHalf) + widthHalf;
+                let screenY = -(worldPos.y * heightHalf) + heightHalf;
+                
+                screenX = Math.max(100, Math.min(window.innerWidth - 100, screenX));
+                screenY = Math.max(100, Math.min(window.innerHeight - 100, screenY));
+                
+                const wrapper = document.querySelector('div#fixed-overlay');
+                if (wrapper) {
+                  if (!navigator) {
+                    navigator = document.createElement('span');
+                    wrapper.appendChild(navigator);
+                    navigator.id = 'navigator';
+                    navigator.innerText = 'ピンの位置';
+                  }
+                  navigator.classList.remove('invisible');
+                  navigator.style.top = screenY + 'px';
+                  navigator.style.left = screenX + 'px';
+                  shown = true;
                 }
-                navigator.style.top = screenY + 'px';
-                navigator.style.left = screenX + 'px';
               }
+            }
+
+            if (!shown && navigator) {
+              navigator.classList.add('invisible');
             }
           }
         }
@@ -246,8 +259,10 @@
         height: 100%;
         position: relative:
         z-index: 1;
+        border-radius: 1vh;
       }
       #navigator { position: fixed; display: block; padding: 1.5vh; background-color: red; color: white; font-size: 2vh; font-weight: bold; }
+      #navigator.invisible { display: none; }
     </style>
   </head>
   <body style="margin: 0; overflow: hidden;">
