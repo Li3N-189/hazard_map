@@ -161,6 +161,25 @@
           } catch (err) {
             console.error('地形データの取得・生成に失敗しました:', err);
           }
+        },
+        tick: function() {
+          if (this.el.object3D.children.length >= 2) {
+            let pinMesh = this.el.object3D.children[1];
+            let scene = document.querySelector('#camera');
+            if (scene.camera) {
+              let worldPos = new THREE.Vector3();
+              pinMesh.getWorldPosition(worldPos);
+              worldPos.project(scene.camera);
+              
+              const widthHalf = window.innerWidth / 2;
+              const heightHalf = window.innerHeight / 2;
+              
+              const screenX = (worldPos.x * widthHalf) + widthHalf;
+              const screenY = -(worldPos.y * heightHalf) + heightHalf;
+          
+              console.log(`Screen X: ${screenX}, Screen Y: ${screenY}`);
+            }
+          }
         }
       });
 
@@ -227,7 +246,7 @@
           <a-box id="water" material="color: #08f; transparent: true; opacity: 0.5; depthWrite: false" position="0 0 0" scale="1 0 1"></a-box>
         </a-entity>
       </a-marker>
-      <a-entity camera="near: 0.05; far: 20;"></a-entity>
+      <a-entity id="camera" camera="near: 0.05; far: 20;"></a-entity>
     </a-scene>
 
     <script>
@@ -239,7 +258,7 @@
 
       const terrainElem = document.querySelector('#terrain');
       terrainElem.setAttribute('gsi-terrain', `lat: ${lat}; lon: ${lon}; zoom: ${zoom}; heightScale: ${heightScale};`);
-
+      
       const depthElem = document.querySelector('#depth');
       const waterElem = document.querySelector('#water');
       depthElem.addEventListener('input', (e) => {
