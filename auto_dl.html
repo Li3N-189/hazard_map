@@ -197,7 +197,17 @@
                   const navRect = navigator.getBoundingClientRect();
                   screenX = Math.max(navRect.width / 2 + 10, Math.min(window.innerWidth - navRect.width / 2 - 10, screenX));
                   screenY = Math.max(navRect.height / 2 + 10, Math.min(window.innerHeight - navRect.height / 2 - 10, screenY));
-                
+
+                  navigator.classList.remove('pointing-left');
+                  navigator.classList.remove('pointing-right');
+                  navigator.classList.remove('pointing-up');
+                  navigator.classList.remove('pointing-down');
+                  
+                  if (screenX < 0) navigator.classList.add('pointing-left');
+                  if (screenX > window.innerWidth) navigator.classList.add('pointing-right');
+                  if (screenY < 0) navigator.classList.add('pointing-up');
+                  if (screenY > window.iinnerHeight) navigator.classList.add('pointing-down');
+                  
                   navigator.style.top = screenY + 'px';
                   navigator.style.left = screenX + 'px';
                   shown = true;
@@ -292,10 +302,49 @@
       #navigator::after {
         content: "▲";
         position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
+        translate: -50% -50%;
       }
+      #navigator.pointing-up.pointing-left::after {
+        top: 10%;
+        left: 10%;
+        transform: rotate(45deg);
+      }
+      #navigator.pointing-down.pointing-left::after {
+        bottom: 10%;
+        left: 10%;
+        transform: rotate(135deg);
+      }
+      #navigator.pointing-down.pointing-right::after {
+        bottom: 10%;
+        right: 10%;
+        transform: rotate(225deg);
+      }
+      #navigator.pointing-up.pointing-right::after {
+        top: 10%;
+        right: 10%;
+        transform: rotate(315deg);
+      }
+      
+      #navigator.pointing-up::after {
+        top: 10%;
+        left: 50%;
+      }
+      #navigator.pointing-left::after {
+        top: 50%;
+        right: 10%;
+        transform: rotate(90deg);
+      }
+      #navigator.pointing-down::after {
+        bottom: 10%;
+        left: 50%;
+        transform: rotate(180deg);
+      }
+      #navigator.pointing-left::after {
+        top: 50%;
+        left: 10%;
+        transform: rotate(270deg);
+      }
+      
       #navigator.invisible { display: none; }
     </style>
   </head>
