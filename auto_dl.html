@@ -165,8 +165,8 @@
         tick: function() {
           if (this.el.object3D.children.length >= 2) {
             let pinMesh = this.el.object3D.children[1];
-            let scene = document.querySelector('#camera');
-            if (scene.camera) {
+            let scene = document.querySelector('a-scene');
+            if (scene?.camera) {
               let worldPos = new THREE.Vector3();
               pinMesh.getWorldPosition(worldPos);
               worldPos.project(scene.camera);
