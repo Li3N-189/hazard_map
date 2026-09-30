@@ -184,8 +184,8 @@
               let screenY = canvasY + rect.top;
               console.log(`x: ${screenX}, y: ${screenY}`);
               if (screenX < 0 || screenX > window.innerWidth ||screenY < 0 || screenY > window.innerHeight) {
-                screenX = Math.max(100, Math.min(window.innerWidth - 100, screenX));
-                screenY = Math.max(100, Math.min(window.innerHeight - 100, screenY));
+                screenX = Math.max(10, Math.min(window.innerWidth - 10, screenX));
+                screenY = Math.max(10, Math.min(window.innerHeight - 10, screenY));
                 
                 const wrapper = document.querySelector('div#fixed-overlay');
                 if (wrapper) {
@@ -196,8 +196,10 @@
                     navigator.innerText = 'ピンの位置';
                   }
                   navigator.classList.remove('invisible');
-                  navigator.style.top = screenY + 'px';
-                  navigator.style.left = screenX + 'px';
+
+                  const navRect = navigator.getBoundingClientRect();
+                  navigator.style.top = (screenY - navRect.height / 2) + 'px';
+                  navigator.style.left = (screenX - navRect.width / 2) + 'px';
                   shown = true;
                 }
               }
