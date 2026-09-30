@@ -185,9 +185,10 @@
                   navigator = document.createElement('span');
                   wrapper.appendChild(navigator);
                   navigator.id = 'navigator';
+                  navigator.innerText = 'ピンの位置';
                 }
-                navigator.style.top = screenY;
-                navigator.style.left = screenX;
+                navigator.style.top = screenY + 'px';
+                navigator.style.left = screenX + 'px';
               }
             }
           }
