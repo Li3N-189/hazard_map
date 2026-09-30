@@ -175,6 +175,7 @@
               let worldPos = new THREE.Vector3();
               pinMesh.getWorldPosition(worldPos);
               worldPos.project(scene.camera);
+              console.log(`x: ${worldPos.x}, y: ${worldPos.y}`);
               if (worldPos.x < -1 || worldPos.x > 1 || worldPos.y < -1 || worldPos.y > 1) {
                 const widthHalf = scene.clientWidth / 2;
                 const heightHalf = scene.clientHeight / 2;
@@ -259,11 +260,19 @@
         height: 100%;
         position: relative:
         z-index: 1;
+      }
+      #navigator {
+        position: fixed;
+        display: block;
+        padding: 1.5vh;
+        background-color: rgba(255, 0, 0, 0.8);
+        color: white;
+        font-size: 2vh;
+        font-weight: bold;
         border-radius: 1vh;
         -webkit-border-radius: 1vh;
         font-family: sans-serif;
       }
-      #navigator { position: fixed; display: block; padding: 1.5vh; background-color: rgba(255, 0, 0, 0.8); color: white; font-size: 2vh; font-weight: bold; }
       #navigator.invisible { display: none; }
     </style>
   </head>
