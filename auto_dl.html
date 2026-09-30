@@ -180,8 +180,8 @@
 
               const canvasX = (worldPos.x + 1) * rect.width / 2;
               const canvasY = (-worldPos.y + 1) * rect.height / 2;
-              const screenX = canvasX + rect.left;
-              const screenY = canvasY + rect.top;
+              let screenX = canvasX + rect.left;
+              let screenY = canvasY + rect.top;
               console.log(`x: ${screenX}, y: ${screenY}`);
               if (screenX < 0 || screenX > window.innerWidth ||screenY < 0 || screenY > window.innerHeight) {
                 screenX = Math.max(100, Math.min(window.innerWidth - 100, screenX));
