@@ -166,7 +166,8 @@
           if (this.el.object3D.children.length >= 2) {
             let pinMesh = this.el.object3D.children[1];
             let scene = document.querySelector('a-scene');
-            if (scene?.camera) {
+            let markerEl = document.querySelector("a-marker");
+            if (scene?.camera && markerEl?.object3D?.visible) {
               let worldPos = new THREE.Vector3();
               pinMesh.getWorldPosition(worldPos);
               worldPos.project(scene.camera);
@@ -176,7 +177,16 @@
               
               const screenX = (worldPos.x * widthHalf) + widthHalf;
               const screenY = -(worldPos.y * heightHalf) + heightHalf;
-          
+
+              let wrapper = document.querySelector('span#navigator');
+              if (!wrapper) {
+                wrapper = document.createElement('span');
+                document.body.appendChild(wrapper);
+                wrapper.id = 'navigator';
+                wrapper.style = 'position: fixed; display: block; padding: 1.5vh; background-color: red; color: white; font-size: 1vh;';
+              }
+              wrapper.style.top = screenY;
+              wrapper.style.bottom = screenX;
               console.log(`Screen X: ${screenX}, Screen Y: ${screenY}`);
             }
           }
