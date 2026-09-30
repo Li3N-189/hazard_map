@@ -280,8 +280,14 @@
         white-space: nowrap;
       }
       #navigator::before {
-        content: url('img/pin.png');
+        content: "";
+        background-image: url('img/pin.png');
         display: block;
+        width: 5vh;
+        height: 5vh;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
       }
       #navigator.invisible { display: none; }
     </style>
