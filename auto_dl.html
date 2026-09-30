@@ -171,20 +171,21 @@
             
             let shown = false;
             
-            if (scene?.camera && markerEl?.object3D?.visible) {
+            if (scene?.camera && scene?.canvas && markerEl?.object3D?.visible) {
+              const rect = scene.canvas.getBoundingClientRect();
+              
               let worldPos = new THREE.Vector3();
               pinMesh.getWorldPosition(worldPos);
               worldPos.project(scene.camera);
-              console.log(`x: ${worldPos.x}, y: ${worldPos.y}`);
-              if (worldPos.x < -1 || worldPos.x > 1 || worldPos.y < -1 || worldPos.y > 1) {
-                const widthHalf = scene.clientWidth / 2;
-                const heightHalf = scene.clientHeight / 2;
-                
-                let screenX = (worldPos.x * widthHalf) + widthHalf;
-                let screenY = -(worldPos.y * heightHalf) + heightHalf;
-                
-                screenX = Math.max(100, Math.min(scene.clientWidth - 100, screenX));
-                screenY = Math.max(100, Math.min(scene.clientHeight - 100, screenY));
+
+              const canvasX = (worldPos.x + 1) * rect.width / 2;
+              const canvasY = (-worldPos.y + 1) * rect.height / 2;
+              const screenX = canvasX + rect.left;
+              const screenY = canvasY + rect.top;
+              console.log(`x: ${screenX}, y: ${screenY}`);
+              if (screenX < 0 || screenX > window.innerWidth ||screenY < 0 || screenY > window.innerHeight) {
+                screenX = Math.max(100, Math.min(window.innerWidth - 100, screenX));
+                screenY = Math.max(100, Math.min(window.innerHeight - 100, screenY));
                 
                 const wrapper = document.querySelector('div#fixed-overlay');
                 if (wrapper) {
