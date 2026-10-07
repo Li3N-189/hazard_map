@@ -65,9 +65,8 @@
       const MAP_CANVAS_SIZE = 1024;
       const BASE_COLOR = '#f4f1ea';
 
-      // ★レイヤ名は要確認：コンソールの "[gsi-vector] layers:" 出力と
-      //   地物種別コード一覧を照合して調整してください。
       // 上にあるものほど先（下側）に描画されます。
+      // width は detail = 0 (標準時) を基準としたピクセル幅
       const VECTOR_STYLE = [
         { layer: 'landforms',  fill: '#e6e2d3' },
         { layer: 'structurea', fill: '#e0dcd2' },
@@ -75,18 +74,17 @@
         { layer: 'building',   fill: '#d8cfc2', stroke: '#b9ad9d', width: 1 },
         { layer: 'contour',    stroke: '#c9a77c', width: 1 },
         { layer: 'river',      stroke: '#7fb8e6', width: 3 },
-        { layer: 'road',       stroke: '#8a8a8a', width: 6 },   // 縁取り
-        { layer: 'road',       stroke: '#ffffff', width: 4 },   // 本体
-        { layer: 'railway',    stroke: '#444444', width: 3 },
-        { layer: 'boundary',   stroke: '#a05fa0', width: 2, dash: [10, 6] },
-        { layer: 'coastline',  stroke: '#4a90c8', width: 2 }
+        { layer: 'road',       stroke: '#8a8a8a', width: 5 },   // 縁取り
+        { layer: 'road',       stroke: '#ffffff', width: 3.5 }, // 本体
+        { layer: 'railway',    stroke: '#444444', width: 2.5 },
+        { layer: 'boundary',   stroke: '#a05fa0', width: 1.5, dash: [10, 6] },
+        { layer: 'coastline',  stroke: '#4a90c8', width: 1.5 }
       ];
 
-      // 注記レイヤ名と、注記テキストを取り出す関数（属性名は要確認）
+      // 注記レイヤ名と注記テキストを取り出す関数
       const LABEL_LAYER = 'label';
       const getLabelText = (props) => props.knj || props.name || props.label || '';
 
-      // ARオブジェクトとしての注記の基準サイズ（AR空間での高さ, 単位: m）
       const LABEL_HEIGHT = 0.050;
       const LABEL_LIFT = 0.03;
       const MAX_LABELS = 60;
@@ -137,7 +135,7 @@
         }
       }
 
-      // 注記テキストのCanvasテクスチャ（白フチ付き）
+      // 注記テキストのCanvasテクスチャ
       function makeLabelTexture(text) {
         const fontPx = 48, pad = 12;
         const measure = document.createElement('canvas').getContext('2d');
@@ -171,18 +169,18 @@
       // ============================================================
       AFRAME.registerComponent('gsi-terrain', {
         schema: {
-          lat: { type: 'number', default: 35.3606 },       // 富士山
+          lat: { type: 'number', default: 35.3606 },
           lon: { type: 'number', default: 138.7274 },
-          zoom: { type: 'int', default: 12 },             // 推奨: 9 ～ 14
-          heightScale: { type: 'number', default: 1.0 },   // 高さの強調倍率
-          tileType: { type: 'string', default: 'std' },    // ラスタ地図の種類(フォールバック用)
-          mapSource: { type: 'string', default: 'vector' } // 'vector' | 'raster'
+          zoom: { type: 'int', default: 12 },
+          heightScale: { type: 'number', default: 1.0 },
+          tileType: { type: 'string', default: 'std' },
+          mapSource: { type: 'string', default: 'vector' }
         },
 
         init: function () {
           this.terrainToken = 0;
           this.mapToken = 0;
-          this.detail = 0;                 // 地図の詳細度 (-1 ～ 3)
+          this.detail = 0;
           this.vtCache = new Map();
           this.labelGroup = new THREE.Group();
           this.labels = [];
@@ -191,7 +189,11 @@
           this._lastS = null;
           this._vec = new THREE.Vector3();
 
-          // ピンチ操作による拡大率の変化 → 地図の詳細度を調整
+          // ライブラリを先行ロードして初回切り替え時の遅延を削減
+          loadVectorTileLibs();
+
+          // ピンチ操作時のレスポンス改善（デバウンスを120msに短縮）
+          this.scaleTimer = null;
           this.onScale = (e) => {
             clearTimeout(this.scaleTimer);
             this.scaleTimer = setTimeout(() => {
@@ -200,7 +202,7 @@
                 this.detail = d;
                 this.refreshMap();
               }
-            }, 400);
+            }, 120);
           };
           this.scaleTarget = this.el.parentEl;
           if (this.scaleTarget) this.scaleTarget.addEventListener('gesture-scale', this.onScale);
@@ -209,7 +211,7 @@
         },
 
         update: function (oldData) {
-          if (!oldData || Object.keys(oldData).length === 0) return; // 初回はinitで読み込み済み
+          if (!oldData || Object.keys(oldData).length === 0) return;
           if (oldData.lat !== this.data.lat || oldData.lon !== this.data.lon ||
               oldData.zoom !== this.data.zoom || oldData.heightScale !== this.data.heightScale ||
               oldData.mapSource !== this.data.mapSource) {
@@ -226,21 +228,15 @@
           const myToken = ++this.terrainToken;
           const { lat, lon, zoom, heightScale } = this.data;
 
-          // 1. タイル座標の計算 (整数部がタイル番号、小数部がタイル内の位置)
           const exactTile = latLonToTileExact(lat, lon, zoom);
           const tileX = Math.floor(exactTile.x);
           const tileY = Math.floor(exactTile.y);
-
-          // タイル内での割合 (0.0 〜 1.0, 左上起点)
           const fractionX = exactTile.x - tileX;
           const fractionY = exactTile.y - tileY;
 
-          // 2. 実タイルの物理幅(メートル)を計算 (赤道半径 R ≈ 6378137m)
           const R = 6378137;
           const latRad = lat * Math.PI / 180;
           const tileSizeMeters = (2 * Math.PI * R * Math.cos(latRad)) / Math.pow(2, zoom);
-
-          // 3. AR空間でのサイズ設定 (1.0m 四方)
           const targetSize = 1.0;
 
           const demUrl = `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${zoom}/${tileX}/${tileY}.png`;
@@ -249,7 +245,6 @@
             const demData = await loadDEMTile(demUrl);
             if (myToken !== this.terrainToken) return;
 
-            // --- 地形メッシュの生成 ---
             const widthSegments = 255;
             const heightSegments = 255;
             const geometry = new THREE.PlaneGeometry(targetSize, targetSize, widthSegments, heightSegments);
@@ -273,9 +268,8 @@
             });
 
             const mesh = new THREE.Mesh(geometry, material);
-            mesh.rotation.x = -Math.PI / 2; // 水平に倒す
+            mesh.rotation.x = -Math.PI / 2;
 
-            // --- ピン（マーカー）の生成 ---
             const px = Math.min(Math.floor(fractionX * 256), 255);
             const py = Math.min(Math.floor(fractionY * 256), 255);
             const exactH = getElevation(demData, px, py);
@@ -289,10 +283,9 @@
             const pinGeo = new THREE.ConeGeometry(0.02, pinHeight, 16);
             const pinMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
             const pinMesh = new THREE.Mesh(pinGeo, pinMat);
-            pinMesh.rotation.x = Math.PI; // 先端を下向きに
+            pinMesh.rotation.x = Math.PI;
             pinMesh.position.set(pinX, pinY + (pinHeight / 2), pinZ);
 
-            // --- シーンへの追加 ---
             this.disposeLabels();
             while (this.el.object3D.children.length > 0) {
               this.el.object3D.remove(this.el.object3D.children[0]);
@@ -316,7 +309,6 @@
           }
         },
 
-        // 現在の詳細度で地図テクスチャと注記を作り直す
         refreshMap: async function () {
           if (!this.material || !this.tile) return;
           const myToken = ++this.mapToken;
@@ -356,17 +348,14 @@
           this.material.needsUpdate = true;
         },
 
-        // ベクトルタイルから地図テクスチャ(Canvas)と注記候補を生成
         buildVectorMap: async function (detail) {
           const { z, x: tileX, y: tileY } = this.tile;
           const libs = await loadVectorTileLibs();
 
-          // ベクトルタイルのズーム = ラスタのズーム - 1 (+ 詳細度)
           const vz = Math.min(16, Math.max(4, z - 1 + detail));
           const n = Math.pow(2, vz);
           const nz = Math.pow(2, z);
 
-          // 地形タイルが占める範囲（世界を1とした割合）
           const x0 = tileX / nz, x1 = (tileX + 1) / nz;
           const y0 = tileY / nz, y1 = (tileY + 1) / nz;
           const eps = 1e-9;
@@ -385,11 +374,6 @@
           const tiles = (await Promise.all(jobs)).filter(Boolean);
           if (tiles.length === 0) return null;
 
-          if (!this._layersLogged) {
-            console.info('[gsi-vector] layers:', Object.keys(tiles[0].vt.layers));
-            this._layersLogged = true;
-          }
-
           const S = MAP_CANVAS_SIZE;
           const canvas = document.createElement('canvas');
           canvas.width = S;
@@ -400,9 +384,8 @@
           ctx.lineJoin = 'round';
           ctx.lineCap = 'round';
 
-          const pxPerWorld = S * nz; // 世界全体を1としたときのピクセル数
+          const pxPerWorld = S * nz;
 
-          // タイルごとの変換パラメータ
           const placed = tiles.map(({ vt, vx, vy }) => ({
             vt,
             ox: (vx / n - x0) * pxPerWorld,
@@ -410,10 +393,14 @@
             tilePx: pxPerWorld / n
           }));
 
-          // --- 地図の描画 ---
+          // ズーム拡大に伴う線の過剰な太さを抑制するスケーリング係数
+          // detail > 0 で線幅を縮小し、AR空間上での見かけの太さを安定化
+          const widthScaleFactor = 1 / Math.pow(1.4, Math.max(0, detail));
+
           for (const rule of VECTOR_STYLE) {
             ctx.setLineDash(rule.dash || []);
-            ctx.lineWidth = rule.width || 1;
+            const baseW = rule.width || 1;
+            ctx.lineWidth = Math.max(0.75, baseW * widthScaleFactor);
             if (rule.fill) ctx.fillStyle = rule.fill;
             if (rule.stroke) ctx.strokeStyle = rule.stroke;
 
@@ -423,7 +410,6 @@
               const k = p.tilePx / layer.extent;
 
               if (rule.fill) {
-                // ポリゴンは地物ごとに塗る（穴あき処理のため evenodd）
                 for (let i = 0; i < layer.length; i++) {
                   const f = layer.feature(i);
                   if (f.type !== 3) continue;
@@ -433,7 +419,6 @@
                   if (rule.stroke) ctx.stroke();
                 }
               } else {
-                // 線は1レイヤ分をまとめて描く
                 ctx.beginPath();
                 for (let i = 0; i < layer.length; i++) {
                   const f = layer.feature(i);
@@ -446,7 +431,6 @@
           }
           ctx.setLineDash([]);
 
-          // --- 注記候補の収集（テクスチャには描かない） ---
           const labels = [];
           for (const p of placed) {
             const layer = p.vt.layers[LABEL_LAYER];
@@ -467,11 +451,9 @@
           return { canvas, labels };
         },
 
-        // 注記をAR空間のオブジェクト(Sprite + 引出線)として配置
         placeLabels: function (candidates, detail) {
           this.disposeLabels();
 
-          // 詳細度が上がるほど間引き距離を小さくする
           const minDist = 0.14 / Math.pow(1.6, detail);
           const accepted = [];
           for (const c of candidates) {
@@ -519,7 +501,7 @@
             this.labelGroup.add(sprite);
             this.labels.push({ sprite, line, aspect, lx, lz, surfaceY });
           }
-          this._lastS = null; // 次のtickでサイズを再計算
+          this._lastS = null;
         },
 
         disposeLabels: function () {
@@ -534,7 +516,6 @@
           this.labels = [];
         },
 
-        // ピンチ拡大率に関わらず、注記のAR空間上のサイズを一定に保つ
         updateLabelScale: function () {
           if (this.labels.length === 0) return;
           const s = this.el.object3D.getWorldScale(this._vec).x || 1;
@@ -611,8 +592,6 @@
         }
       });
 
-      // 1本指スワイプで移動、2本指で拡大縮小するカスタムコンポーネント
-      // （拡大率の変化を 'gesture-scale' イベントで通知する点のみ変更）
       AFRAME.registerComponent("gesture-handler", {
         schema: { enabled: { default: true }, translationFactor: { default: 1 }, minScale: { default: 0.3 }, maxScale: { default: 8 } },
         init: function () {
@@ -650,7 +629,6 @@
             this.el.object3D.scale.x = this.scaleFactor * this.initialScale.x;
             this.el.object3D.scale.y = this.scaleFactor * this.initialScale.y;
             this.el.object3D.scale.z = this.scaleFactor * this.initialScale.z;
-            // 地図の詳細度調整用に拡大率を通知（バブリングなし）
             this.el.emit('gesture-scale', { scale: this.scaleFactor }, false);
           }
         },
@@ -780,7 +758,6 @@
       const lon = parseFloat(urlParams.get('lon')) || 138.7274;
       const zoom = parseInt(urlParams.get('zoom')) || 12;
       const heightScale = parseFloat(urlParams.get('heightScale')) || 1.0;
-      // ?mapSource=raster で従来のラスタ地図に切り替え
       const mapSource = urlParams.get('mapSource') === 'raster' ? 'raster' : 'vector';
 
       const terrainElem = document.querySelector('#terrain');
