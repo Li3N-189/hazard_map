@@ -85,7 +85,7 @@
       const LABEL_LAYER = 'label';
       const getLabelText = (props) => props.knj || props.name || props.label || '';
 
-      const LABEL_HEIGHT = 0.050;
+      const LABEL_HEIGHT = 0.060;
       const LABEL_LIFT = 0.03;
       const MAX_LABELS = 60;
 
@@ -192,7 +192,7 @@
           // ライブラリを先行ロードして初回切り替え時の遅延を削減
           loadVectorTileLibs();
 
-          // ピンチ操作時のレスポンス改善（デバウンスを120msに短縮）
+          // ピンチ操作時のレスポンス改善
           this.scaleTimer = null;
           this.onScale = (e) => {
             clearTimeout(this.scaleTimer);
@@ -202,7 +202,7 @@
                 this.detail = d;
                 this.refreshMap();
               }
-            }, 120);
+            }, 60);
           };
           this.scaleTarget = this.el.parentEl;
           if (this.scaleTarget) this.scaleTarget.addEventListener('gesture-scale', this.onScale);
