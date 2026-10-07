@@ -57,16 +57,13 @@
       // 地理院地図Vector（実験提供ベクトルタイル）関連
       // ============================================================
 
-      // ベクトルタイルURL（仕様変更時はここを差し替える）
+      // ベクトルタイルURL
       const VECTOR_URL = (z, x, y) =>
         `https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/${z}/${x}/${y}.pbf`;
 
-      // テクスチャ解像度（正方形, 2の累乗）
-      const MAP_CANVAS_SIZE = 1024;
+      const BASE_CANVAS_SIZE = 1024;
       const BASE_COLOR = '#f4f1ea';
 
-      // 上にあるものほど先（下側）に描画されます。
-      // width は detail = 0 (標準時) を基準としたピクセル幅
       const VECTOR_STYLE = [
         { layer: 'landforms',  fill: '#e6e2d3' },
         { layer: 'structurea', fill: '#e0dcd2' },
@@ -81,7 +78,6 @@
         { layer: 'coastline',  stroke: '#4a90c8', width: 1.5 }
       ];
 
-      // 注記レイヤ名と注記テキストを取り出す関数
       const LABEL_LAYER = 'label';
       const getLabelText = (props) => props.knj || props.name || props.label || '';
 
@@ -89,7 +85,6 @@
       const LABEL_LIFT = 0.03;
       const MAX_LABELS = 60;
 
-      // pbf / vector-tile を遅延ロード（ESM）
       let vtLibsPromise = null;
       function loadVectorTileLibs() {
         if (!vtLibsPromise) {
@@ -104,7 +99,6 @@
         return vtLibsPromise;
       }
 
-      // ベクトルタイル1枚の取得（キャッシュ付き, 失敗時は null）
       function fetchVectorTile(libs, cache, vz, vx, vy) {
         const key = `${vz}/${vx}/${vy}`;
         if (!cache.has(key)) {
@@ -123,7 +117,6 @@
         return cache.get(key);
       }
 
-      // リング群をCanvasパスに追加
       function addRings(ctx, rings, ox, oy, k, closed) {
         for (const ring of rings) {
           if (ring.length === 0) continue;
@@ -135,7 +128,6 @@
         }
       }
 
-      // 注記テキストのCanvasテクスチャ
       function makeLabelTexture(text) {
         const fontPx = 48, pad = 12;
         const measure = document.createElement('canvas').getContext('2d');
@@ -159,8 +151,9 @@
 
         const tex = new THREE.CanvasTexture(c);
         tex.encoding = THREE.sRGBEncoding;
-        tex.generateMipmaps = false;
-        tex.minFilter = THREE.LinearFilter;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
         return { tex, aspect: w / h };
       }
 
@@ -189,20 +182,19 @@
           this._lastS = null;
           this._vec = new THREE.Vector3();
 
-          // ライブラリを先行ロードして初回切り替え時の遅延を削減
           loadVectorTileLibs();
 
-          // ピンチ操作時のレスポンス改善
           this.scaleTimer = null;
           this.onScale = (e) => {
             clearTimeout(this.scaleTimer);
             this.scaleTimer = setTimeout(() => {
-              const d = Math.max(-1, Math.min(3, Math.round(Math.log2(e.detail.scale))));
+              // 拡大スケールに応じて detail を算出（最大 2 段階まで解像度を向上）
+              const d = Math.max(0, Math.min(2, Math.round(Math.log2(e.detail.scale))));
               if (d !== this.detail) {
                 this.detail = d;
                 this.refreshMap();
               }
-            }, 60);
+            }, 80);
           };
           this.scaleTarget = this.el.parentEl;
           if (this.scaleTarget) this.scaleTarget.addEventListener('gesture-scale', this.onScale);
@@ -341,7 +333,10 @@
         setTexture: function (tex) {
           if (tex) {
             tex.encoding = THREE.sRGBEncoding;
-            tex.anisotropy = 4;
+            tex.anisotropy = 16;
+            tex.generateMipmaps = true;
+            tex.minFilter = THREE.LinearMipmapLinearFilter;
+            tex.magFilter = THREE.LinearFilter;
           }
           if (this.material.map) this.material.map.dispose();
           this.material.map = tex;
@@ -352,7 +347,8 @@
           const { z, x: tileX, y: tileY } = this.tile;
           const libs = await loadVectorTileLibs();
 
-          const vz = Math.min(16, Math.max(4, z - 1 + detail));
+          // ズームインに応じてベクトルタイルの詳細度を調整
+          const vz = Math.min(16, Math.max(4, z + detail));
           const n = Math.pow(2, vz);
           const nz = Math.pow(2, z);
 
@@ -374,7 +370,11 @@
           const tiles = (await Promise.all(jobs)).filter(Boolean);
           if (tiles.length === 0) return null;
 
-          const S = MAP_CANVAS_SIZE;
+          // detail に応じて Canvas 解像度をスケール（1024 -> 2048 -> 4096）
+          const scaleMultiplier = Math.pow(2, detail);
+          const S = Math.min(4096, BASE_CANVAS_SIZE * scaleMultiplier);
+          const resolutionRatio = S / BASE_CANVAS_SIZE;
+
           const canvas = document.createElement('canvas');
           canvas.width = S;
           canvas.height = S;
@@ -393,14 +393,18 @@
             tilePx: pxPerWorld / n
           }));
 
-          // ズーム拡大に伴う線の過剰な太さを抑制するスケーリング係数
-          // detail > 0 で線幅を縮小し、AR空間上での見かけの太さを安定化
-          const widthScaleFactor = 1 / Math.pow(1.4, Math.max(0, detail));
+          // 高解像度 Canvas 上で線の太さを適正に保つための係数
+          const strokeScale = resolutionRatio / Math.pow(1.3, detail);
 
           for (const rule of VECTOR_STYLE) {
-            ctx.setLineDash(rule.dash || []);
+            if (rule.dash) {
+              ctx.setLineDash(rule.dash.map((d) => d * resolutionRatio));
+            } else {
+              ctx.setLineDash([]);
+            }
+
             const baseW = rule.width || 1;
-            ctx.lineWidth = Math.max(0.75, baseW * widthScaleFactor);
+            ctx.lineWidth = Math.max(1.0, baseW * strokeScale);
             if (rule.fill) ctx.fillStyle = rule.fill;
             if (rule.stroke) ctx.strokeStyle = rule.stroke;
 
