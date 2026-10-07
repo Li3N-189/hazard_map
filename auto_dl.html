@@ -3,18 +3,18 @@
 <html>
   <head>
     <meta charset="utf-8">
-    <title>AR.js GSI 3D Terrain with Vector Annotations</title>
+    <title>AR.js GSI 3D Terrain with Pin (Vector)</title>
     <!-- A-Frame の読み込み -->
     <script src="https://aframe.io/releases/1.3.0/aframe.min.js"></script>
     <!-- AR.js の読み込み -->
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
     <script src="https://raw.githack.com/fcor/arjs-gestures/master/gesture-detector.js"></script>
-    <!-- ベクトルタイル (PBF/MVT) パース用ライブラリ -->
-    <script src="https://unpkg.com/pbf@3.2.1/dist/pbf.js"></script>
-    <script src="https://unpkg.com/@mapbox/vector-tile@1.3.1/dist/vector-tile.js"></script>
-
     <script>
-      // 緯度経度・ズームレベルからタイル座標(x, y)の正確な浮動小数点値を算出
+      // ============================================================
+      // 共通ユーティリティ
+      // ============================================================
+
+      // 緯度経度・ズームレベルからタイル座標(x, y)の「正確な浮動小数点値」を計算
       function latLonToTileExact(lat, lon, zoom) {
         const n = Math.pow(2, zoom);
         const rad = lat * Math.PI / 180;
@@ -23,30 +23,19 @@
         return { x, y };
       }
 
-      // メルカトルピクセル/タイル内ローカル座標から緯度経度への逆変換
-      function tileFractionToLatLon(tileX, tileY, fractionX, fractionY, zoom) {
-        const n = Math.pow(2, zoom);
-        const lon = ((tileX + fractionX) / n) * 360 - 180;
-        const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * (tileY + fractionY) / n)));
-        const lat = latRad * 180 / Math.PI;
-        return { lat, lon };
-      }
-
       // 国土地理院 DEM PNGのピクセル(RGB)から標高(m)を算出
       function getElevation(imgData, x, y) {
-        const clampedX = Math.max(0, Math.min(imgData.width - 1, Math.floor(x)));
-        const clampedY = Math.max(0, Math.min(imgData.height - 1, Math.floor(y)));
-        const idx = (clampedY * imgData.width + clampedX) * 4;
+        const idx = (y * imgData.width + x) * 4;
         const r = imgData.data[idx];
         const g = imgData.data[idx + 1];
         const b = imgData.data[idx + 2];
 
         const u = r * 65536 + g * 256 + b;
-        if (u === 8388608) return 0;
+        if (u === 8388608) return 0; // データなし(海など)
         return (u < 8388608) ? (u * 0.01) : ((u - 16777216) * 0.01);
       }
 
-      // 標高タイル画像(PNG)の非同期取得
+      // 標高タイル画像(PNG)の読み込み
       function loadDEMTile(url) {
         return new Promise((resolve, reject) => {
           const img = new Image();
@@ -64,178 +53,211 @@
         });
       }
 
-      // 高解像度テクスチャ（ズーム+1の4枚サブタイル）を1枚のCanvasテクスチャに合成
-      async function loadCompositeTexture(baseTileX, baseTileY, zoom, tileType) {
-        const subZoom = zoom + 1;
-        const startX = baseTileX * 2;
-        const startY = baseTileY * 2;
-        const canvas = document.createElement('canvas');
-        canvas.width = 512;
-        canvas.height = 512;
-        const ctx = canvas.getContext('2d');
+      // ============================================================
+      // 地理院地図Vector（実験提供ベクトルタイル）関連
+      // ============================================================
 
-        const promises = [];
-        for (let dy = 0; dy < 2; dy++) {
-          for (let dx = 0; dx < 2; dx++) {
-            const tx = startX + dx;
-            const ty = startY + dy;
-            const subUrl = `https://cyberjapandata.gsi.go.jp/xyz/${tileType}/${subZoom}/${tx}/${ty}.png`;
-            const p = new Promise((resolve) => {
-              const img = new Image();
-              img.crossOrigin = 'Anonymous';
-              img.onload = () => {
-                ctx.drawImage(img, dx * 256, dy * 256, 256, 256);
-                resolve();
-              };
-              img.onerror = () => resolve();
-              img.src = subUrl;
-            });
-            promises.push(p);
-          }
+      // ベクトルタイルURL（仕様変更時はここを差し替える）
+      const VECTOR_URL = (z, x, y) =>
+        `https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/${z}/${x}/${y}.pbf`;
+
+      // テクスチャ解像度（正方形, 2の累乗）
+      const MAP_CANVAS_SIZE = 1024;
+      const BASE_COLOR = '#f4f1ea';
+
+      // ★レイヤ名は要確認：コンソールの "[gsi-vector] layers:" 出力と
+      //   地物種別コード一覧を照合して調整してください。
+      // 上にあるものほど先（下側）に描画されます。
+      const VECTOR_STYLE = [
+        { layer: 'landforms',  fill: '#e6e2d3' },
+        { layer: 'structurea', fill: '#e0dcd2' },
+        { layer: 'waterarea',  fill: '#a9d3f2' },
+        { layer: 'building',   fill: '#d8cfc2', stroke: '#b9ad9d', width: 1 },
+        { layer: 'contour',    stroke: '#c9a77c', width: 1 },
+        { layer: 'river',      stroke: '#7fb8e6', width: 3 },
+        { layer: 'road',       stroke: '#8a8a8a', width: 6 },   // 縁取り
+        { layer: 'road',       stroke: '#ffffff', width: 4 },   // 本体
+        { layer: 'railway',    stroke: '#444444', width: 3 },
+        { layer: 'boundary',   stroke: '#a05fa0', width: 2, dash: [10, 6] },
+        { layer: 'coastline',  stroke: '#4a90c8', width: 2 }
+      ];
+
+      // 注記レイヤ名と、注記テキストを取り出す関数（属性名は要確認）
+      const LABEL_LAYER = 'label';
+      const getLabelText = (props) => props.knj || props.name || props.label || '';
+
+      // ARオブジェクトとしての注記の基準サイズ（AR空間での高さ, 単位: m）
+      const LABEL_HEIGHT = 0.035;
+      const LABEL_LIFT = 0.03;
+      const MAX_LABELS = 60;
+
+      // pbf / vector-tile を遅延ロード（ESM）
+      let vtLibsPromise = null;
+      function loadVectorTileLibs() {
+        if (!vtLibsPromise) {
+          vtLibsPromise = Promise.all([
+            import('https://esm.sh/pbf@3.2.1'),
+            import('https://esm.sh/@mapbox/vector-tile@1.3.1')
+          ]).then(([pbfMod, vtMod]) => ({
+            Pbf: pbfMod.default,
+            VectorTile: vtMod.VectorTile || (vtMod.default && vtMod.default.VectorTile)
+          }));
         }
-        await Promise.all(promises);
-        return new THREE.CanvasTexture(canvas);
+        return vtLibsPromise;
       }
 
-      // 地理院地図Vectorタイル(pbf)から注釈フィーチャを非同期抽出
-      async function loadGsiVectorLabels(zoom, tileX, tileY) {
-        // 地理院ベクトルタイル実験室 (最適化ベクトルタイル)
-        const vectorUrl = `https://cyberjapandata.gsi.go.jp/xyz/experimental_bvmap/${zoom}/${tileX}/${tileY}.pbf`;
-        try {
-          const res = await fetch(vectorUrl);
-          if (!res.ok) return [];
-          const buffer = await res.arrayBuffer();
-          const pbf = new Pbf(new Uint8Array(buffer));
-          const tile = new vector_tile.VectorTile(pbf);
-
-          const labels = [];
-          // 主要な注釈・シンボルレイヤを走査
-          const targetLayers = ['label', 'symbol'];
-          targetLayers.forEach((layerName) => {
-            const layer = tile.layers[layerName];
-            if (!layer) return;
-
-            for (let i = 0; i < layer.length; i++) {
-              const feat = layer.feature(i);
-              const props = feat.properties;
-              const text = props.name || props.knj || props.text;
-              if (!text) continue;
-
-              // フィーチャ形状からタイル内割合(0.0〜1.0)を算出
-              const geom = feat.loadGeometry();
-              if (geom && geom[0] && geom[0][0]) {
-                const pt = geom[0][0];
-                const fx = pt.x / layer.extent;
-                const fy = pt.y / layer.extent;
-                labels.push({
-                  text: text,
-                  fractionX: fx,
-                  fractionY: fy,
-                  type: props.class || 'general'
-                });
-              }
+      // ベクトルタイル1枚の取得（キャッシュ付き, 失敗時は null）
+      function fetchVectorTile(libs, cache, vz, vx, vy) {
+        const key = `${vz}/${vx}/${vy}`;
+        if (!cache.has(key)) {
+          cache.set(key, (async () => {
+            try {
+              const res = await fetch(VECTOR_URL(vz, vx, vy));
+              if (!res.ok) return null;
+              const buf = await res.arrayBuffer();
+              return new libs.VectorTile(new libs.Pbf(buf));
+            } catch (e) {
+              console.warn('[gsi-vector] tile fetch failed:', key, e);
+              return null;
             }
-          });
-          return labels;
-        } catch (e) {
-          console.warn('Vectorタイルの取得・パースをスキップ:', e);
-          return [];
+          })());
+        }
+        return cache.get(key);
+      }
+
+      // リング群をCanvasパスに追加
+      function addRings(ctx, rings, ox, oy, k, closed) {
+        for (const ring of rings) {
+          if (ring.length === 0) continue;
+          ctx.moveTo(ox + ring[0].x * k, oy + ring[0].y * k);
+          for (let i = 1; i < ring.length; i++) {
+            ctx.lineTo(ox + ring[i].x * k, oy + ring[i].y * k);
+          }
+          if (closed) ctx.closePath();
         }
       }
 
-      // ビルボード型3Dテキストスプライトの生成
-      function createTextSprite(text, fontSize = 28, bgColor = 'rgba(0, 0, 0, 0.75)', textColor = '#ffffff') {
-        const canvas = document.createElement('canvas');
-        const ctx = canvas.getContext('2d');
-        ctx.font = `bold ${fontSize}px sans-serif`;
-        const textWidth = ctx.measureText(text).width;
-        
-        canvas.width = THREE.MathUtils.ceilPowerOfTwo(textWidth + 30);
-        canvas.height = THREE.MathUtils.ceilPowerOfTwo(fontSize + 24);
+      // 注記テキストのCanvasテクスチャ（白フチ付き）
+      function makeLabelTexture(text) {
+        const fontPx = 48, pad = 12;
+        const measure = document.createElement('canvas').getContext('2d');
+        measure.font = `bold ${fontPx}px sans-serif`;
+        const w = Math.ceil(measure.measureText(text).width) + pad * 2;
+        const h = fontPx + pad * 2;
 
-        ctx.font = `bold ${fontSize}px sans-serif`;
-        ctx.fillStyle = bgColor;
-        ctx.roundRect ? ctx.roundRect(4, 4, canvas.width - 8, canvas.height - 8, 8) : ctx.fillRect(4, 4, canvas.width - 8, canvas.height - 8);
-        ctx.fill();
-
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-
-        ctx.fillStyle = textColor;
+        const c = document.createElement('canvas');
+        c.width = w;
+        c.height = h;
+        const ctx = c.getContext('2d');
+        ctx.font = `bold ${fontPx}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 10;
+        ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+        ctx.strokeText(text, w / 2, h / 2);
+        ctx.fillStyle = '#222';
+        ctx.fillText(text, w / 2, h / 2);
 
-        const texture = new THREE.CanvasTexture(canvas);
-        const spriteMaterial = new THREE.SpriteMaterial({
-          map: texture,
-          depthTest: false,
-          depthWrite: false
-        });
-        const sprite = new THREE.Sprite(spriteMaterial);
-        
-        // スケール調整（AR空間内で適切な大きさになるよう正規化）
-        const aspect = canvas.width / canvas.height;
-        const baseHeight = 0.04;
-        sprite.scale.set(baseHeight * aspect, baseHeight, 1.0);
-        return sprite;
+        const tex = new THREE.CanvasTexture(c);
+        tex.encoding = THREE.sRGBEncoding;
+        tex.generateMipmaps = false;
+        tex.minFilter = THREE.LinearFilter;
+        return { tex, aspect: w / h };
       }
 
-      // 国土地理院 地形3Dメッシュ & ベクトル注釈統合コンポーネント
+      // ============================================================
+      // 国土地理院 地形3Dメッシュ生成コンポーネント
+      // ============================================================
       AFRAME.registerComponent('gsi-terrain', {
         schema: {
-          lat: { type: 'number', default: 35.3606 },
+          lat: { type: 'number', default: 35.3606 },       // 富士山
           lon: { type: 'number', default: 138.7274 },
-          zoom: { type: 'int', default: 12 },
-          heightScale: { type: 'number', default: 1.0 },
-          tileType: { type: 'string', default: 'seamlessphoto' } // 視認性向上のためデフォルトを航空写真に変更
+          zoom: { type: 'int', default: 12 },             // 推奨: 9 ～ 14
+          heightScale: { type: 'number', default: 1.0 },   // 高さの強調倍率
+          tileType: { type: 'string', default: 'std' },    // ラスタ地図の種類(フォールバック用)
+          mapSource: { type: 'string', default: 'vector' } // 'vector' | 'raster'
         },
 
         init: function () {
+          this.terrainToken = 0;
+          this.mapToken = 0;
+          this.detail = 0;                 // 地図の詳細度 (-1 ～ 3)
+          this.vtCache = new Map();
+          this.labelGroup = new THREE.Group();
+          this.labels = [];
+          this.pinMesh = null;
+          this.material = null;
+          this._lastS = null;
+          this._vec = new THREE.Vector3();
+
+          // ピンチ操作による拡大率の変化 → 地図の詳細度を調整
+          this.onScale = (e) => {
+            clearTimeout(this.scaleTimer);
+            this.scaleTimer = setTimeout(() => {
+              const d = Math.max(-1, Math.min(3, Math.round(Math.log2(e.detail.scale))));
+              if (d !== this.detail) {
+                this.detail = d;
+                this.refreshMap();
+              }
+            }, 400);
+          };
+          this.scaleTarget = this.el.parentEl;
+          if (this.scaleTarget) this.scaleTarget.addEventListener('gesture-scale', this.onScale);
+
           this.loadTerrain();
         },
 
         update: function (oldData) {
-          if (oldData.lat !== this.data.lat || oldData.lon !== this.data.lon || 
-              oldData.zoom !== this.data.zoom || oldData.heightScale !== this.data.heightScale || 
-              oldData.tileType !== this.data.tileType) {
+          if (!oldData || Object.keys(oldData).length === 0) return; // 初回はinitで読み込み済み
+          if (oldData.lat !== this.data.lat || oldData.lon !== this.data.lon ||
+              oldData.zoom !== this.data.zoom || oldData.heightScale !== this.data.heightScale ||
+              oldData.mapSource !== this.data.mapSource) {
             this.loadTerrain();
           }
         },
 
-        loadTerrain: async function () {
-          const { lat, lon, zoom, heightScale, tileType } = this.data;
+        remove: function () {
+          clearTimeout(this.scaleTimer);
+          if (this.scaleTarget) this.scaleTarget.removeEventListener('gesture-scale', this.onScale);
+        },
 
+        loadTerrain: async function () {
+          const myToken = ++this.terrainToken;
+          const { lat, lon, zoom, heightScale } = this.data;
+
+          // 1. タイル座標の計算 (整数部がタイル番号、小数部がタイル内の位置)
           const exactTile = latLonToTileExact(lat, lon, zoom);
           const tileX = Math.floor(exactTile.x);
           const tileY = Math.floor(exactTile.y);
+
+          // タイル内での割合 (0.0 〜 1.0, 左上起点)
           const fractionX = exactTile.x - tileX;
           const fractionY = exactTile.y - tileY;
 
+          // 2. 実タイルの物理幅(メートル)を計算 (赤道半径 R ≈ 6378137m)
           const R = 6378137;
           const latRad = lat * Math.PI / 180;
           const tileSizeMeters = (2 * Math.PI * R * Math.cos(latRad)) / Math.pow(2, zoom);
+
+          // 3. AR空間でのサイズ設定 (1.0m 四方)
           const targetSize = 1.0;
 
           const demUrl = `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${zoom}/${tileX}/${tileY}.png`;
 
           try {
-            // DEM、高解像度合成テクスチャ、およびベクトル注釈を並列ロード
-            const [demData, texture, vectorLabels] = await Promise.all([
-              loadDEMTile(demUrl),
-              loadCompositeTexture(tileX, tileY, zoom, tileType),
-              loadGsiVectorLabels(zoom, tileX, tileY)
-            ]);
+            const demData = await loadDEMTile(demUrl);
+            if (myToken !== this.terrainToken) return;
 
             // --- 地形メッシュの生成 ---
-            const segments = 255;
-            const geometry = new THREE.PlaneGeometry(targetSize, targetSize, segments, segments);
+            const widthSegments = 255;
+            const heightSegments = 255;
+            const geometry = new THREE.PlaneGeometry(targetSize, targetSize, widthSegments, heightSegments);
             const posAttr = geometry.attributes.position;
 
-            for (let y = 0; y <= segments; y++) {
-              for (let x = 0; x <= segments; x++) {
-                const index = y * (segments + 1) + x;
+            for (let y = 0; y <= heightSegments; y++) {
+              for (let x = 0; x <= widthSegments; x++) {
+                const index = y * (widthSegments + 1) + x;
                 const h = getElevation(demData, x, y);
                 const hScale = (h / tileSizeMeters) * targetSize * heightScale;
                 posAttr.setZ(index, hScale);
@@ -244,16 +266,16 @@
             geometry.computeVertexNormals();
 
             const material = new THREE.MeshStandardMaterial({
-              map: texture,
+              map: null,
               roughness: 0.8,
               metalness: 0.1,
               side: THREE.DoubleSide
             });
 
             const mesh = new THREE.Mesh(geometry, material);
-            mesh.rotation.x = -Math.PI / 2;
+            mesh.rotation.x = -Math.PI / 2; // 水平に倒す
 
-            // --- ターゲットピン（マーカー）の生成 ---
+            // --- ピン（マーカー）の生成 ---
             const px = Math.min(Math.floor(fractionX * 256), 255);
             const py = Math.min(Math.floor(fractionY * 256), 255);
             const exactH = getElevation(demData, px, py);
@@ -263,108 +285,334 @@
             const pinZ = (fractionY - 0.5) * targetSize;
             const pinY = exactHScale;
 
-            const pinGroup = new THREE.Group();
             const pinHeight = 0.15;
             const pinGeo = new THREE.ConeGeometry(0.02, pinHeight, 16);
-            const pinMat = new THREE.MeshStandardMaterial({ color: 0xff2222 });
+            const pinMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
             const pinMesh = new THREE.Mesh(pinGeo, pinMat);
-            pinMesh.rotation.x = Math.PI;
-            pinMesh.position.set(0, pinHeight / 2, 0);
-            pinGroup.add(pinMesh);
+            pinMesh.rotation.x = Math.PI; // 先端を下向きに
+            pinMesh.position.set(pinX, pinY + (pinHeight / 2), pinZ);
 
-            // 指定地点のARラベル
-            const targetLabel = createTextSprite("指定地点", 28, 'rgba(230, 20, 20, 0.9)');
-            targetLabel.position.set(0, pinHeight + 0.05, 0);
-            pinGroup.add(targetLabel);
-
-            pinGroup.position.set(pinX, pinY, pinZ);
-
-            // --- シーン構築 ---
+            // --- シーンへの追加 ---
+            this.disposeLabels();
             while (this.el.object3D.children.length > 0) {
               this.el.object3D.remove(this.el.object3D.children[0]);
             }
+            this.labelGroup = new THREE.Group();
             this.el.object3D.add(mesh);
-            this.el.object3D.add(pinGroup);
+            this.el.object3D.add(pinMesh);
+            this.el.object3D.add(this.labelGroup);
 
-            // --- ベクトル注釈のARオブジェクト配置 ---
-            const annotationsGroup = new THREE.Group();
-            const maxLabels = 25; // パフォーマンスと視認性維持のため上限を設定
-            let placed = 0;
+            this.pinMesh = pinMesh;
+            this.material = material;
+            this.demData = demData;
+            this.tile = { z: zoom, x: tileX, y: tileY };
+            this.tileSizeMeters = tileSizeMeters;
+            this.targetSize = targetSize;
+            this.vtCache.clear();
 
-            for (const item of vectorLabels) {
-              if (placed >= maxLabels) break;
-              // 画面端すぎるラベルは除外
-              if (item.fractionX < 0.05 || item.fractionX > 0.95 || item.fractionY < 0.05 || item.fractionY > 0.95) continue;
-
-              const lx = (item.fractionX - 0.5) * targetSize;
-              const lz = (item.fractionY - 0.5) * targetSize;
-              const elevPx = item.fractionX * 255;
-              const elevPy = item.fractionY * 255;
-              const lh = getElevation(demData, elevPx, elevPy);
-              const ly = (lh / tileSizeMeters) * targetSize * heightScale;
-
-              // 地形より少し浮かせた位置に配置
-              const sprite = createTextSprite(item.text, 22, 'rgba(20, 30, 45, 0.8)');
-              sprite.position.set(lx, ly + 0.035, lz);
-              annotationsGroup.add(sprite);
-              placed++;
-            }
-            this.el.object3D.add(annotationsGroup);
-
+            await this.refreshMap();
           } catch (err) {
-            console.error('地形・注釈データの生成に失敗しました:', err);
+            console.error('地形データの取得・生成に失敗しました:', err);
           }
         },
 
-        tick: function() {
-          // ピン位置ナビゲーター（既存ロジックを保持）
-          if (this.el.object3D.children.length >= 2) {
-            let pinGroup = this.el.object3D.children[1];
+        // 現在の詳細度で地図テクスチャと注記を作り直す
+        refreshMap: async function () {
+          if (!this.material || !this.tile) return;
+          const myToken = ++this.mapToken;
+
+          let result = null;
+          if (this.data.mapSource === 'vector') {
+            try {
+              result = await this.buildVectorMap(this.detail);
+            } catch (e) {
+              console.warn('[gsi-vector] ベクトル描画に失敗。ラスタにフォールバックします:', e);
+            }
+          }
+          if (myToken !== this.mapToken) return;
+
+          if (result) {
+            this.setTexture(new THREE.CanvasTexture(result.canvas));
+            this.placeLabels(result.labels, this.detail);
+          } else {
+            this.disposeLabels();
+            const { z, x, y } = this.tile;
+            const imgUrl = `https://cyberjapandata.gsi.go.jp/xyz/${this.data.tileType}/${z}/${x}/${y}.png`;
+            const tex = await new Promise((resolve) => {
+              new THREE.TextureLoader().setCrossOrigin('anonymous').load(imgUrl, resolve, undefined, () => resolve(null));
+            });
+            if (myToken !== this.mapToken) return;
+            this.setTexture(tex);
+          }
+        },
+
+        setTexture: function (tex) {
+          if (tex) {
+            tex.encoding = THREE.sRGBEncoding;
+            tex.anisotropy = 4;
+          }
+          if (this.material.map) this.material.map.dispose();
+          this.material.map = tex;
+          this.material.needsUpdate = true;
+        },
+
+        // ベクトルタイルから地図テクスチャ(Canvas)と注記候補を生成
+        buildVectorMap: async function (detail) {
+          const { z, x: tileX, y: tileY } = this.tile;
+          const libs = await loadVectorTileLibs();
+
+          // ベクトルタイルのズーム = ラスタのズーム - 1 (+ 詳細度)
+          const vz = Math.min(16, Math.max(4, z - 1 + detail));
+          const n = Math.pow(2, vz);
+          const nz = Math.pow(2, z);
+
+          // 地形タイルが占める範囲（世界を1とした割合）
+          const x0 = tileX / nz, x1 = (tileX + 1) / nz;
+          const y0 = tileY / nz, y1 = (tileY + 1) / nz;
+          const eps = 1e-9;
+          const vxMin = Math.floor(x0 * n + eps), vxMax = Math.ceil(x1 * n - eps) - 1;
+          const vyMin = Math.floor(y0 * n + eps), vyMax = Math.ceil(y1 * n - eps) - 1;
+
+          const jobs = [];
+          for (let vy = vyMin; vy <= vyMax; vy++) {
+            for (let vx = vxMin; vx <= vxMax; vx++) {
+              jobs.push(
+                fetchVectorTile(libs, this.vtCache, vz, vx, vy)
+                  .then((vt) => (vt ? { vt, vx, vy } : null))
+              );
+            }
+          }
+          const tiles = (await Promise.all(jobs)).filter(Boolean);
+          if (tiles.length === 0) return null;
+
+          if (!this._layersLogged) {
+            console.info('[gsi-vector] layers:', Object.keys(tiles[0].vt.layers));
+            this._layersLogged = true;
+          }
+
+          const S = MAP_CANVAS_SIZE;
+          const canvas = document.createElement('canvas');
+          canvas.width = S;
+          canvas.height = S;
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = BASE_COLOR;
+          ctx.fillRect(0, 0, S, S);
+          ctx.lineJoin = 'round';
+          ctx.lineCap = 'round';
+
+          const pxPerWorld = S * nz; // 世界全体を1としたときのピクセル数
+
+          // タイルごとの変換パラメータ
+          const placed = tiles.map(({ vt, vx, vy }) => ({
+            vt,
+            ox: (vx / n - x0) * pxPerWorld,
+            oy: (vy / n - y0) * pxPerWorld,
+            tilePx: pxPerWorld / n
+          }));
+
+          // --- 地図の描画 ---
+          for (const rule of VECTOR_STYLE) {
+            ctx.setLineDash(rule.dash || []);
+            ctx.lineWidth = rule.width || 1;
+            if (rule.fill) ctx.fillStyle = rule.fill;
+            if (rule.stroke) ctx.strokeStyle = rule.stroke;
+
+            for (const p of placed) {
+              const layer = p.vt.layers[rule.layer];
+              if (!layer) continue;
+              const k = p.tilePx / layer.extent;
+
+              if (rule.fill) {
+                // ポリゴンは地物ごとに塗る（穴あき処理のため evenodd）
+                for (let i = 0; i < layer.length; i++) {
+                  const f = layer.feature(i);
+                  if (f.type !== 3) continue;
+                  ctx.beginPath();
+                  addRings(ctx, f.loadGeometry(), p.ox, p.oy, k, true);
+                  ctx.fill('evenodd');
+                  if (rule.stroke) ctx.stroke();
+                }
+              } else {
+                // 線は1レイヤ分をまとめて描く
+                ctx.beginPath();
+                for (let i = 0; i < layer.length; i++) {
+                  const f = layer.feature(i);
+                  if (f.type === 1) continue;
+                  addRings(ctx, f.loadGeometry(), p.ox, p.oy, k, f.type === 3);
+                }
+                ctx.stroke();
+              }
+            }
+          }
+          ctx.setLineDash([]);
+
+          // --- 注記候補の収集（テクスチャには描かない） ---
+          const labels = [];
+          for (const p of placed) {
+            const layer = p.vt.layers[LABEL_LAYER];
+            if (!layer) continue;
+            const k = p.tilePx / layer.extent;
+            for (let i = 0; i < layer.length; i++) {
+              const f = layer.feature(i);
+              if (f.type !== 1) continue;
+              const text = getLabelText(f.properties || {});
+              if (!text) continue;
+              const pt = f.loadGeometry()[0][0];
+              const u = (p.ox + pt.x * k) / S;
+              const v = (p.oy + pt.y * k) / S;
+              if (u < 0 || u > 1 || v < 0 || v > 1) continue;
+              labels.push({ text, u, v });
+            }
+          }
+          return { canvas, labels };
+        },
+
+        // 注記をAR空間のオブジェクト(Sprite + 引出線)として配置
+        placeLabels: function (candidates, detail) {
+          this.disposeLabels();
+
+          // 詳細度が上がるほど間引き距離を小さくする
+          const minDist = 0.14 / Math.pow(1.6, detail);
+          const accepted = [];
+          for (const c of candidates) {
+            if (accepted.length >= MAX_LABELS) break;
+            let ok = true;
+            for (const a of accepted) {
+              const du = a.u - c.u, dv = a.v - c.v;
+              if (du * du + dv * dv < minDist * minDist || a.text === c.text) {
+                ok = false;
+                break;
+              }
+            }
+            if (ok) accepted.push(c);
+          }
+
+          const heightScale = this.data.heightScale;
+          for (const c of accepted) {
+            const dx = Math.min(255, Math.max(0, Math.round(c.u * 255)));
+            const dy = Math.min(255, Math.max(0, Math.round(c.v * 255)));
+            const h = getElevation(this.demData, dx, dy);
+            const surfaceY = (h / this.tileSizeMeters) * this.targetSize * heightScale;
+            const lx = (c.u - 0.5) * this.targetSize;
+            const lz = (c.v - 0.5) * this.targetSize;
+
+            const { tex, aspect } = makeLabelTexture(c.text);
+            const sprite = new THREE.Sprite(new THREE.SpriteMaterial({
+              map: tex,
+              transparent: true,
+              depthTest: false
+            }));
+            sprite.center.set(0.5, 0);
+            sprite.renderOrder = 10;
+
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([
+              new THREE.Vector3(lx, surfaceY, lz),
+              new THREE.Vector3(lx, surfaceY + LABEL_LIFT, lz)
+            ]);
+            const line = new THREE.Line(lineGeo, new THREE.LineBasicMaterial({
+              color: 0x333333,
+              depthTest: false
+            }));
+            line.renderOrder = 9;
+
+            this.labelGroup.add(line);
+            this.labelGroup.add(sprite);
+            this.labels.push({ sprite, line, aspect, lx, lz, surfaceY });
+          }
+          this._lastS = null; // 次のtickでサイズを再計算
+        },
+
+        disposeLabels: function () {
+          for (const l of this.labels) {
+            l.sprite.material.map.dispose();
+            l.sprite.material.dispose();
+            l.line.geometry.dispose();
+            l.line.material.dispose();
+            this.labelGroup.remove(l.sprite);
+            this.labelGroup.remove(l.line);
+          }
+          this.labels = [];
+        },
+
+        // ピンチ拡大率に関わらず、注記のAR空間上のサイズを一定に保つ
+        updateLabelScale: function () {
+          if (this.labels.length === 0) return;
+          const s = this.el.object3D.getWorldScale(this._vec).x || 1;
+          if (this._lastS && Math.abs(s - this._lastS) / this._lastS < 0.01) return;
+          this._lastS = s;
+
+          for (const l of this.labels) {
+            const hLocal = LABEL_HEIGHT / s;
+            const lift = LABEL_LIFT / s;
+            l.sprite.scale.set(hLocal * l.aspect, hLocal, 1);
+            l.sprite.position.set(l.lx, l.surfaceY + lift, l.lz);
+            l.line.geometry.attributes.position.setY(1, l.surfaceY + lift);
+            l.line.geometry.attributes.position.needsUpdate = true;
+          }
+        },
+
+        tick: function () {
+          this.updateLabelScale();
+
+          if (this.pinMesh) {
+            const pinMesh = this.pinMesh;
             let scene = document.querySelector('a-scene');
             let markerEl = document.querySelector("a-marker");
             let navigator = document.querySelector('span#navigator');
+
             let shown = false;
-            
+
             if (scene?.camera && scene?.canvas && markerEl?.object3D?.visible) {
               const rect = scene.canvas.getBoundingClientRect();
+
               let worldPos = new THREE.Vector3();
-              pinGroup.getWorldPosition(worldPos);
+              pinMesh.getWorldPosition(worldPos);
               worldPos.project(scene.camera);
 
-              let screenX = (worldPos.x + 1) * rect.width / 2 + rect.left;
-              let screenY = (-worldPos.y + 1) * rect.height / 2 + rect.top;
-
+              const canvasX = (worldPos.x + 1) * rect.width / 2;
+              const canvasY = (-worldPos.y + 1) * rect.height / 2;
+              let screenX = canvasX + rect.left;
+              let screenY = canvasY + rect.top;
               if (screenX < 0 || screenX > window.innerWidth || screenY < 0 || screenY > window.innerHeight) {
                 const wrapper = document.querySelector('div#fixed-overlay');
                 if (wrapper) {
                   if (!navigator) {
                     navigator = document.createElement('span');
+                    wrapper.appendChild(navigator);
                     navigator.id = 'navigator';
                     navigator.innerText = 'ピンの位置';
-                    wrapper.appendChild(navigator);
                   }
-                  navigator.className = '';
+                  navigator.classList.remove('invisible');
+                  navigator.classList.remove('pointing-left');
+                  navigator.classList.remove('pointing-right');
+                  navigator.classList.remove('pointing-up');
+                  navigator.classList.remove('pointing-down');
+
                   if (screenX < 0) navigator.classList.add('pointing-left');
                   if (screenX > window.innerWidth) navigator.classList.add('pointing-right');
                   if (screenY < 0) navigator.classList.add('pointing-up');
                   if (screenY > window.innerHeight) navigator.classList.add('pointing-down');
-                  
+
                   const navRect = navigator.getBoundingClientRect();
                   screenX = Math.max(navRect.width / 2 + 10, Math.min(window.innerWidth - navRect.width / 2 - 10, screenX));
                   screenY = Math.max(navRect.height / 2 + 10, Math.min(window.innerHeight - navRect.height / 2 - 10, screenY));
-                  
+
                   navigator.style.top = screenY + 'px';
                   navigator.style.left = screenX + 'px';
                   shown = true;
                 }
               }
             }
-            if (!shown && navigator) navigator.classList.add('invisible');
+
+            if (!shown && navigator) {
+              navigator.classList.add('invisible');
+            }
           }
         }
       });
 
-      // ジェスチャー操作コンポーネント (ピンチイン/アウトおよびスワイプ)
+      // 1本指スワイプで移動、2本指で拡大縮小するカスタムコンポーネント
+      // （拡大率の変化を 'gesture-scale' イベントで通知する点のみ変更）
       AFRAME.registerComponent("gesture-handler", {
         schema: { enabled: { default: true }, translationFactor: { default: 1 }, minScale: { default: 0.3 }, maxScale: { default: 8 } },
         init: function () {
@@ -402,37 +650,107 @@
             this.el.object3D.scale.x = this.scaleFactor * this.initialScale.x;
             this.el.object3D.scale.y = this.scaleFactor * this.initialScale.y;
             this.el.object3D.scale.z = this.scaleFactor * this.initialScale.z;
+            // 地図の詳細度調整用に拡大率を通知（バブリングなし）
+            this.el.emit('gesture-scale', { scale: this.scaleFactor }, false);
           }
         },
       });
     </script>
     <style>
-      div#ui { position: fixed; right: 0; z-index: 10; display: flex; align-items: center; height: 100%; }
+      div#ui { position: fixed; right: 0; z-index: 1; display: flex; align-items: center; height: 100%; }
       div#ui > input[type="range"] { height: 50vh; writing-mode: vertical-rl; transform: rotate(180deg); padding: 2vh; }
+      #credit {
+        position: fixed;
+        left: 0;
+        bottom: 0;
+        z-index: 1;
+        padding: 0.4vh 1vh;
+        font-size: 1.4vh;
+        font-family: sans-serif;
+        color: #222;
+        background-color: rgba(255, 255, 255, 0.7);
+        pointer-events: none;
+      }
+      #fixed-navigator {
+        display: block;
+        width: 100%;
+        height: 100%;
+        position: relative;
+        z-index: 1;
+      }
       #navigator {
         position: fixed;
         display: inline-block;
-        padding: 1.5vh 2vh;
-        background-color: rgba(220, 20, 20, 0.85);
+        padding: 2.5vh;
+        background-color: rgba(255, 0, 0, 0.8);
         color: white;
-        font-size: 1.8vh;
+        font-size: 2vh;
         font-weight: bold;
-        border-radius: 0.8vh;
+        border-radius: 1vh;
+        -webkit-border-radius: 1vh;
         font-family: sans-serif;
         transform: translate(-50%, -50%);
         pointer-events: none;
         white-space: nowrap;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+      }
+      #navigator::before {
+        content: "";
+        background-image: url('img/pin.png');
+        display: inline-block;
+        width: 2vh;
+        height: 2vh;
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: center;
       }
       #navigator::after {
         font-size: 1vh;
         content: "▲";
         position: absolute;
+        translate: -50% -50%;
       }
-      #navigator.pointing-up::after { top: 10%; left: 50%; transform: translateX(-50%); }
-      #navigator.pointing-right::after { top: 50%; right: 5%; transform: translateY(-50%) rotate(90deg); }
-      #navigator.pointing-down::after { bottom: 10%; left: 50%; transform: translateX(-50%) rotate(180deg); }
-      #navigator.pointing-left::after { top: 50%; left: 5%; transform: translateY(-50%) rotate(270deg); }
+
+      #navigator.pointing-up::after {
+        top: 20%;
+        left: 50%;
+      }
+      #navigator.pointing-right::after {
+        top: 50%;
+        left: 90%;
+        transform: rotate(90deg);
+      }
+      #navigator.pointing-down::after {
+        top: 80%;
+        left: 50%;
+        transform: rotate(180deg);
+      }
+      #navigator.pointing-left::after {
+        top: 50%;
+        left: 10%;
+        transform: rotate(270deg);
+      }
+
+      #navigator.pointing-up.pointing-right::after {
+        top: 20%;
+        left: 90%;
+        transform: rotate(45deg);
+      }
+      #navigator.pointing-down.pointing-right::after {
+        top: 80%;
+        left: 90%;
+        transform: rotate(135deg);
+      }
+      #navigator.pointing-down.pointing-left::after {
+        top: 80%;
+        left: 10%;
+        transform: rotate(225deg);
+      }
+      #navigator.pointing-up.pointing-left::after {
+        top: 20%;
+        left: 10%;
+        transform: rotate(315deg);
+      }
+
       #navigator.invisible { display: none; }
     </style>
   </head>
@@ -440,32 +758,34 @@
     <div id="ui">
       <input id="depth" type="range" min="0" max="0.2" value="0" step="0.001">
     </div>
+    <div id="credit">出典：国土地理院（地理院地図Vector 実験提供ベクトルタイル、標高タイル）</div>
 
-    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector renderer="logarithmicDepthBuffer: true; antialias: true;">
-      <a-light type="ambient" intensity="0.7"></a-light>
-      <a-light type="directional" position="1 3 2" intensity="0.9"></a-light>
+    <a-scene embedded arjs="sourceType: webcam; debugUIEnabled: false;" gesture-detector renderer="logarithmicDepthBuffer: true;">
+      <a-light type="ambient" intensity="0.6"></a-light>
+      <a-light type="directional" position="1 2 1" intensity="0.8"></a-light>
 
       <a-marker preset="custom" type='pattern' url="pattern-marker.patt">
         <a-entity class="cantap" gesture-handler="minScale: 0.25; maxScale: 8;">
           <a-entity id="terrain" gsi-terrain="lat: 35.3606; lon: 138.7274; zoom: 12;" position="0 0 0"></a-entity>
-          <a-box id="water" material="color: #08f; transparent: true; opacity: 0.45; depthWrite: false" position="0 0 0" scale="1 0 1"></a-box>
+          <a-box id="water" material="color: #08f; transparent: true; opacity: 0.5; depthWrite: false" position="0 0 0" scale="1 0 1"></a-box>
         </a-entity>
       </a-marker>
-      <a-entity id="camera" camera="near: 0.05; far: 30;"></a-entity>
+      <a-entity id="camera" camera="near: 0.05; far: 20;"></a-entity>
     </a-scene>
-    <div id="fixed-overlay"></div>
-
+    <div id="fixed-overlay">
+    </div>
     <script>
       const urlParams = new URLSearchParams(window.location.search);
       const lat = parseFloat(urlParams.get('lat')) || 35.3606;
       const lon = parseFloat(urlParams.get('lon')) || 138.7274;
       const zoom = parseInt(urlParams.get('zoom')) || 12;
       const heightScale = parseFloat(urlParams.get('heightScale')) || 1.0;
-      const tileType = urlParams.get('tileType') || 'seamlessphoto'; // 航空写真 または pale / std
+      // ?mapSource=raster で従来のラスタ地図に切り替え
+      const mapSource = urlParams.get('mapSource') === 'raster' ? 'raster' : 'vector';
 
       const terrainElem = document.querySelector('#terrain');
-      terrainElem.setAttribute('gsi-terrain', `lat: ${lat}; lon: ${lon}; zoom: ${zoom}; heightScale: ${heightScale}; tileType: ${tileType};`);
-      
+      terrainElem.setAttribute('gsi-terrain', `lat: ${lat}; lon: ${lon}; zoom: ${zoom}; heightScale: ${heightScale}; mapSource: ${mapSource};`);
+
       const depthElem = document.querySelector('#depth');
       const waterElem = document.querySelector('#water');
       depthElem.addEventListener('input', (e) => {
