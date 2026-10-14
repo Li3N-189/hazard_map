@@ -13,7 +13,39 @@
       // ============================================================
       // 共通ユーティリティ
       // ============================================================
-
+      // 経度方向のタイル番号を折り返す（日付変更線対応）。
+      function wrapTileX(x, zoom) {
+        const n = Math.pow(2, zoom);
+        return ((x % n) + n) % n;
+      }
+      
+      // 表示範囲に重なるタイル番号の範囲。
+      // bounds はズーム zoom における浮動小数点タイル座標。
+      function getTileRange(bounds) {
+        const eps = 1e-9;
+      
+        return {
+          minX: Math.floor(bounds.x0 + eps),
+          maxX: Math.ceil(bounds.x1 - eps) - 1,
+          minY: Math.floor(bounds.y0 + eps),
+          maxY: Math.ceil(bounds.y1 - eps) - 1
+        };
+      }
+      
+      function loadMapImage(url) {
+        return new Promise((resolve, reject) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+      
+          img.onload = () => resolve(img);
+          img.onerror = () => reject(
+            new Error(`地図タイルの取得に失敗しました: ${url}`)
+          );
+      
+          img.src = url;
+        });
+      }
+      
       // 緯度経度・ズームレベルからタイル座標(x, y)の「正確な浮動小数点値」を計算
       function latLonToTileExact(lat, lon, zoom) {
         const n = Math.pow(2, zoom);
@@ -218,38 +250,145 @@
 
         loadTerrain: async function () {
           const myToken = ++this.terrainToken;
-          const { lat, lon, zoom, heightScale } = this.data;
 
+          // 以前の地図生成処理を無効化する。
+          ++this.mapToken;
+
+          const { lat, lon, zoom, heightScale } = this.data;
           const exactTile = latLonToTileExact(lat, lon, zoom);
-          const tileX = Math.floor(exactTile.x);
-          const tileY = Math.floor(exactTile.y);
-          const fractionX = exactTile.x - tileX;
-          const fractionY = exactTile.y - tileY;
+          const n = Math.pow(2, zoom);
+
+          // 指定地点を中心とする、1タイル分の正方形。
+          const bounds = {
+            x0: exactTile.x - 0.5,
+            x1: exactTile.x + 0.5,
+            y0: exactTile.y - 0.5,
+            y1: exactTile.y + 0.5
+          };
+
+          const range = getTileRange(bounds);
 
           const R = 6378137;
           const latRad = lat * Math.PI / 180;
-          const tileSizeMeters = (2 * Math.PI * R * Math.cos(latRad)) / Math.pow(2, zoom);
+          const tileSizeMeters =
+            (2 * Math.PI * R * Math.cos(latRad)) / n;
           const targetSize = 1.0;
 
-          const demUrl = `https://cyberjapandata.gsi.go.jp/xyz/dem_png/${zoom}/${tileX}/${tileY}.png`;
-
           try {
-            const demData = await loadDEMTile(demUrl);
-            if (myToken !== this.terrainToken) return;
+            const demTiles = new Map();
+            const jobs = [];
 
-            const widthSegments = 255;
-            const heightSegments = 255;
-            const geometry = new THREE.PlaneGeometry(targetSize, targetSize, widthSegments, heightSegments);
-            const posAttr = geometry.attributes.position;
+            for (let ty = range.minY; ty <= range.maxY; ty++) {
+              // メルカトル投影の世界範囲外は端の標高で延長する。
+              if (ty < 0 || ty >= n) continue;
 
-            for (let y = 0; y <= heightSegments; y++) {
-              for (let x = 0; x <= widthSegments; x++) {
-                const index = y * (widthSegments + 1) + x;
-                const h = getElevation(demData, x, y);
-                const hScale = (h / tileSizeMeters) * targetSize * heightScale;
-                posAttr.setZ(index, hScale);
+              for (let tx = range.minX; tx <= range.maxX; tx++) {
+                const wrappedX = wrapTileX(tx, zoom);
+                const url =
+                  `https://cyberjapandata.gsi.go.jp/xyz/` +
+                  `dem_png/${zoom}/${wrappedX}/${ty}.png`;
+
+                jobs.push(
+                  loadDEMTile(url).then((data) => {
+                    demTiles.set(`${tx}/${ty}`, data);
+                  })
+                );
               }
             }
+
+            await Promise.all(jobs);
+
+            if (myToken !== this.terrainToken) return;
+
+            // 表示範囲内の正規化座標(u, v)から標高を取得。
+            // DEMの画素中心を基準に、タイル境界をまたいで双線形補間。
+            const readPixel = (gx, gy) => {
+              const clampedY = Math.max(
+                0,
+                Math.min(n * 256 - 1, gy)
+              );
+
+              const tx = Math.floor(gx / 256);
+              const ty = Math.floor(clampedY / 256);
+
+              const px = gx - tx * 256;
+              const py = clampedY - ty * 256;
+
+              // 補間時に表示範囲の外側へ出た場合は、
+              // 取得済み範囲の端の画素を使う。
+              const useTX = Math.max(
+                range.minX,
+                Math.min(range.maxX, tx)
+              );
+
+              const data = demTiles.get(`${useTX}/${ty}`);
+
+              if (!data) {
+                throw new Error(
+                  `標高タイルが不足しています: ${useTX}/${ty}`
+                );
+              }
+
+              const usePX = tx < range.minX
+                ? 0
+                : tx > range.maxX
+                  ? 255
+                  : px;
+
+              return getElevation(data, usePX, py);
+            };
+
+            const sampleElevation = (u, v) => {
+              const gx = (bounds.x0 + u) * 256 - 0.5;
+              const gy = (bounds.y0 + v) * 256 - 0.5;
+
+              const ix = Math.floor(gx);
+              const iy = Math.floor(gy);
+              const fx = gx - ix;
+              const fy = gy - iy;
+
+              const h00 = readPixel(ix, iy);
+              const h10 = readPixel(ix + 1, iy);
+              const h01 = readPixel(ix, iy + 1);
+              const h11 = readPixel(ix + 1, iy + 1);
+
+              return (
+                h00 * (1 - fx) * (1 - fy) +
+                h10 * fx * (1 - fy) +
+                h01 * (1 - fx) * fy +
+                h11 * fx * fy
+              );
+            };
+
+            // 偶数分割にして、指定地点が中央の頂点に一致するようにする。
+            const segments = 256;
+            const geometry = new THREE.PlaneGeometry(
+              targetSize,
+              targetSize,
+              segments,
+              segments
+            );
+
+            const posAttr = geometry.attributes.position;
+
+            for (let y = 0; y <= segments; y++) {
+              for (let x = 0; x <= segments; x++) {
+                const index = y * (segments + 1) + x;
+                const h = sampleElevation(
+                  x / segments,
+                  y / segments
+                );
+
+                posAttr.setZ(
+                  index,
+                  (h / tileSizeMeters) *
+                    targetSize *
+                    heightScale
+                );
+              }
+            }
+
+            posAttr.needsUpdate = true;
             geometry.computeVertexNormals();
 
             const material = new THREE.MeshStandardMaterial({
@@ -262,42 +401,63 @@
             const mesh = new THREE.Mesh(geometry, material);
             mesh.rotation.x = -Math.PI / 2;
 
-            const px = Math.min(Math.floor(fractionX * 256), 255);
-            const py = Math.min(Math.floor(fractionY * 256), 255);
-            const exactH = getElevation(demData, px, py);
-            const exactHScale =
-              (exactH / tileSizeMeters) * targetSize * heightScale;
-
-            const pinX = (fractionX - 0.5) * targetSize;
-            const pinZ = (fractionY - 0.5) * targetSize;
-            const pinY = exactHScale;
-
-            // 指定地点の水平位置がARマーカーの原点になるよう、
-            // 地形・ピン・ラベルを含む terrain エンティティ全体を移動。
-            this.el.object3D.position.x = -pinX;
-            this.el.object3D.position.z = -pinZ;
-
-            // 水面は terrain の兄弟エンティティなので、
-            // 同じ補正を適用して地形との位置関係を維持する。
-            // 高さは既存の水深スライダーに任せる。
-            const waterElem = document.getElementById('water');
-
-            if (waterElem) {
-              waterElem.object3D.position.x = -pinX;
-              waterElem.object3D.position.z = -pinZ;
-            }
-
             const pinHeight = 0.15;
-            const pinGeo = new THREE.ConeGeometry(0.02, pinHeight, 16);
-            const pinMat = new THREE.MeshStandardMaterial({ color: 0xff0000 });
+            const pinGeo = new THREE.ConeGeometry(
+              0.02,
+              pinHeight,
+              16
+            );
+
+            const pinMat = new THREE.MeshStandardMaterial({
+              color: 0xff0000
+            });
+
             const pinMesh = new THREE.Mesh(pinGeo, pinMat);
             pinMesh.rotation.x = Math.PI;
-            pinMesh.position.set(pinX, pinY + (pinHeight / 2), pinZ);
+
+            const pinY =
+              (sampleElevation(0.5, 0.5) / tileSizeMeters) *
+              targetSize *
+              heightScale;
+
+            // 指定地点は常に表示範囲の中央。
+            pinMesh.position.set(
+              0,
+              pinY + pinHeight / 2,
+              0
+            );
 
             this.disposeLabels();
+
             while (this.el.object3D.children.length > 0) {
-              this.el.object3D.remove(this.el.object3D.children[0]);
+              const child = this.el.object3D.children[0];
+              this.el.object3D.remove(child);
+
+              child.traverse((obj) => {
+                if (obj.geometry) obj.geometry.dispose();
+
+                if (obj.material) {
+                  const materials = Array.isArray(obj.material)
+                    ? obj.material
+                    : [obj.material];
+
+                  for (const mat of materials) {
+                    if (mat.map) mat.map.dispose();
+                    mat.dispose();
+                  }
+                }
+              });
             }
+
+            // 前回の位置補正は不要になるため解除する。
+            this.el.object3D.position.set(0, 0, 0);
+
+            const waterElem = document.getElementById('water');
+            if (waterElem) {
+              waterElem.object3D.position.x = 0;
+              waterElem.object3D.position.z = 0;
+            }
+
             this.labelGroup = new THREE.Group();
             this.el.object3D.add(mesh);
             this.el.object3D.add(pinMesh);
@@ -305,44 +465,131 @@
 
             this.pinMesh = pinMesh;
             this.material = material;
-            this.demData = demData;
-            this.tile = { z: zoom, x: tileX, y: tileY };
+            this.sampleElevation = sampleElevation;
+
+            this.tile = {
+              z: zoom,
+              x: Math.floor(exactTile.x),
+              y: Math.floor(exactTile.y)
+            };
+
+            this.mapBounds = bounds;
             this.tileSizeMeters = tileSizeMeters;
             this.targetSize = targetSize;
             this.vtCache.clear();
 
             await this.refreshMap();
           } catch (err) {
-            console.error('地形データの取得・生成に失敗しました:', err);
+            if (myToken !== this.terrainToken) return;
+
+            console.error(
+              '地形データの取得・生成に失敗しました:',
+              err
+            );
           }
         },
+        buildRasterMap: async function () {
+          const { z } = this.tile;
+          const bounds = this.mapBounds;
+          const tileType = this.data.tileType;
+          const range = getTileRange(bounds);
+          const n = Math.pow(2, z);
 
+          const S = BASE_CANVAS_SIZE;
+          const canvas = document.createElement('canvas');
+          canvas.width = S;
+          canvas.height = S;
+
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = BASE_COLOR;
+          ctx.fillRect(0, 0, S, S);
+
+          const jobs = [];
+
+          for (let ty = range.minY; ty <= range.maxY; ty++) {
+            if (ty < 0 || ty >= n) continue;
+
+            for (let tx = range.minX; tx <= range.maxX; tx++) {
+              const url =
+                `https://cyberjapandata.gsi.go.jp/xyz/` +
+                `${tileType}/${z}/${wrapTileX(tx, z)}/${ty}.png`;
+
+              jobs.push(
+                loadMapImage(url).then((img) => ({
+                  img,
+                  tx,
+                  ty
+                }))
+              );
+            }
+          }
+
+          const tiles = await Promise.all(jobs);
+
+          for (const { img, tx, ty } of tiles) {
+            // Canvas の外側は自動的にクリップされる。
+            ctx.drawImage(
+              img,
+              (tx - bounds.x0) * S,
+              (ty - bounds.y0) * S,
+              S,
+              S
+            );
+          }
+
+          return canvas;
+        },
         refreshMap: async function () {
-          if (!this.material || !this.tile) return;
+          if (!this.material || !this.tile || !this.mapBounds) {
+            return;
+          }
+
           const myToken = ++this.mapToken;
+          const terrainToken = this.terrainToken;
+
+          const isCurrent = () => (
+            myToken === this.mapToken &&
+            terrainToken === this.terrainToken
+          );
 
           let result = null;
+
           if (this.data.mapSource === 'vector') {
             try {
               result = await this.buildVectorMap(this.detail);
             } catch (e) {
-              console.warn('[gsi-vector] ベクトル描画に失敗。ラスタにフォールバックします:', e);
+              console.warn(
+                '[gsi-vector] ベクトル描画に失敗。' +
+                  'ラスタにフォールバックします:',
+                e
+              );
             }
           }
-          if (myToken !== this.mapToken) return;
+
+          if (!isCurrent()) return;
 
           if (result) {
-            this.setTexture(new THREE.CanvasTexture(result.canvas));
+            this.setTexture(
+              new THREE.CanvasTexture(result.canvas)
+            );
             this.placeLabels(result.labels, this.detail);
-          } else {
+            return;
+          }
+
+          try {
+            const canvas = await this.buildRasterMap();
+
+            if (!isCurrent()) return;
+
             this.disposeLabels();
-            const { z, x, y } = this.tile;
-            const imgUrl = `https://cyberjapandata.gsi.go.jp/xyz/${this.data.tileType}/${z}/${x}/${y}.png`;
-            const tex = await new Promise((resolve) => {
-              new THREE.TextureLoader().setCrossOrigin('anonymous').load(imgUrl, resolve, undefined, () => resolve(null));
-            });
-            if (myToken !== this.mapToken) return;
-            this.setTexture(tex);
+            this.setTexture(new THREE.CanvasTexture(canvas));
+          } catch (e) {
+            if (!isCurrent()) return;
+
+            console.error(
+              'ラスタ地図の取得・生成に失敗しました:',
+              e
+            );
           }
         },
 
@@ -360,32 +607,50 @@
         },
 
         buildVectorMap: async function (detail) {
-          const { z, x: tileX, y: tileY } = this.tile;
+          const { z } = this.tile;
+          const bounds = this.mapBounds;
+          const cache = this.vtCache;
           const libs = await loadVectorTileLibs();
 
-          // ズームインに応じてベクトルタイルの詳細度を調整
           const vz = Math.min(16, Math.max(4, z + detail));
           const n = Math.pow(2, vz);
           const nz = Math.pow(2, z);
 
-          const x0 = tileX / nz, x1 = (tileX + 1) / nz;
-          const y0 = tileY / nz, y1 = (tileY + 1) / nz;
+          // 指定地点中心の表示範囲を、世界全体の正規化座標に変換。
+          const x0 = bounds.x0 / nz;
+          const x1 = bounds.x1 / nz;
+          const y0 = bounds.y0 / nz;
+          const y1 = bounds.y1 / nz;
+
           const eps = 1e-9;
-          const vxMin = Math.floor(x0 * n + eps), vxMax = Math.ceil(x1 * n - eps) - 1;
-          const vyMin = Math.floor(y0 * n + eps), vyMax = Math.ceil(y1 * n - eps) - 1;
+          const vxMin = Math.floor(x0 * n + eps);
+          const vxMax = Math.ceil(x1 * n - eps) - 1;
+          const vyMin = Math.floor(y0 * n + eps);
+          const vyMax = Math.ceil(y1 * n - eps) - 1;
 
           const jobs = [];
+
           for (let vy = vyMin; vy <= vyMax; vy++) {
+            if (vy < 0 || vy >= n) continue;
+
             for (let vx = vxMin; vx <= vxMax; vx++) {
               jobs.push(
-                fetchVectorTile(libs, this.vtCache, vz, vx, vy)
-                  .then((vt) => (vt ? { vt, vx, vy } : null))
+                fetchVectorTile(
+                  libs,
+                  cache,
+                  vz,
+                  wrapTileX(vx, vz),
+                  vy
+                ).then((vt) => (
+                  vt ? { vt, vx, vy } : null
+                ))
               );
             }
           }
+
           const tiles = (await Promise.all(jobs)).filter(Boolean);
           if (tiles.length === 0) return null;
-
+          
           // detail に応じて Canvas 解像度をスケール（1024 -> 2048 -> 4096）
           const scaleMultiplier = Math.pow(2, detail);
           const S = Math.min(4096, BASE_CANVAS_SIZE * scaleMultiplier);
@@ -493,7 +758,7 @@
           for (const c of accepted) {
             const dx = Math.min(255, Math.max(0, Math.round(c.u * 255)));
             const dy = Math.min(255, Math.max(0, Math.round(c.v * 255)));
-            const h = getElevation(this.demData, dx, dy);
+            const h = this.sampleElevation(c.u, c.v);
             const surfaceY = (h / this.tileSizeMeters) * this.targetSize * heightScale;
             const lx = (c.u - 0.5) * this.targetSize;
             const lz = (c.v - 0.5) * this.targetSize;
