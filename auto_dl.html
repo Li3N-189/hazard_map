@@ -265,11 +265,27 @@
             const px = Math.min(Math.floor(fractionX * 256), 255);
             const py = Math.min(Math.floor(fractionY * 256), 255);
             const exactH = getElevation(demData, px, py);
-            const exactHScale = (exactH / tileSizeMeters) * targetSize * heightScale;
+            const exactHScale =
+              (exactH / tileSizeMeters) * targetSize * heightScale;
 
             const pinX = (fractionX - 0.5) * targetSize;
             const pinZ = (fractionY - 0.5) * targetSize;
             const pinY = exactHScale;
+
+            // 指定地点の水平位置がARマーカーの原点になるよう、
+            // 地形・ピン・ラベルを含む terrain エンティティ全体を移動。
+            this.el.object3D.position.x = -pinX;
+            this.el.object3D.position.z = -pinZ;
+
+            // 水面は terrain の兄弟エンティティなので、
+            // 同じ補正を適用して地形との位置関係を維持する。
+            // 高さは既存の水深スライダーに任せる。
+            const waterElem = document.getElementById('water');
+
+            if (waterElem) {
+              waterElem.object3D.position.x = -pinX;
+              waterElem.object3D.position.z = -pinZ;
+            }
 
             const pinHeight = 0.15;
             const pinGeo = new THREE.ConeGeometry(0.02, pinHeight, 16);
