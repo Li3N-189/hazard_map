@@ -149,7 +149,21 @@
             
             // 先端（下部）が地形の頂点に接するように高さを調整
             pinMesh.position.set(pinX, pinY + (pinHeight / 2), pinZ);
-
+            
+            // 指定地点の水平座標がARマーカーの原点になるよう、
+            // ピンと地形を含む terrain エンティティ全体を移動する。
+            // 高さ方向は変更しない。
+            this.el.object3D.position.x = -pinX;
+            this.el.object3D.position.z = -pinZ;
+            
+            // 水面も地形と同じだけ水平移動し、表示範囲を一致させる。
+            // 水位を操作する position.y と scale.y は変更しない。
+            const waterElem = this.el.parentElement.querySelector('#water');
+            
+            if (waterElem) {
+              waterElem.object3D.position.x = -pinX;
+              waterElem.object3D.position.z = -pinZ;
+            }
 
             // --- シーンへの追加 ---
             while (this.el.object3D.children.length > 0) {
